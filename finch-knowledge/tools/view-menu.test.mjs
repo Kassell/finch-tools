@@ -4,9 +4,9 @@ import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transform } from 'esbuild';
 
-const view = await readFile(new URL('../src/view.ts', import.meta.url), 'utf8');
+const view = (await readFile(new URL('../src/view.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const css = await readFile(new URL('../src/view.css', import.meta.url), 'utf8');
-const declarations = view.slice(0, view.indexOf('\nmountStaticIcons();')).replace(/^import .*\n/gm, '');
+const declarations = view.slice(0, view.indexOf('\nmountStaticIcons();')).replace(/^import .*\r?\n/gm, '');
 const { code } = await transform(declarations, { loader: 'ts' });
 
 function fixture(selectedTops = [900], height = 300, contentHeight = 1000) {

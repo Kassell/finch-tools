@@ -118,7 +118,7 @@ test('both tooltips exist for both locales and in the page English fallback', as
   const en = JSON.parse(await readFile(new URL('../i18n/en-US.json', import.meta.url), 'utf8'));
   assert.equal(zh.ui.preview, '用内置预览打开');
   assert.equal(en.ui.preview, 'Open in the built-in preview');
-  assert.equal(zh.ui.reveal, '在文件管理器中定位副本');
+  assert.equal(zh.ui.reveal, '在文件管理器中定位原文件');
   assert.equal(en.ui.reveal, 'Show in file manager');
   // Without the fallback entries a locale miss paints raw keys on the hover tooltips.
   assert.match(view, /reveal: 'Show in file manager', preview: 'Preview', locate:/);

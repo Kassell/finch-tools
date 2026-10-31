@@ -1,0 +1,11 @@
+{
+  "allow": [
+    {
+      "toolName": "Bash",
+      "key": "node"
+    }
+  ],
+  "ask": [],
+  "deny": [],
+  "tempDeleteDirectories": []
+}
