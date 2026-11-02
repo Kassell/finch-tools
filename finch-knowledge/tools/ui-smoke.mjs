@@ -530,9 +530,11 @@ try {
   await waitFor("document.querySelector('#library-path').textContent === '新增资料'");
   assert.equal(await evaluate("document.querySelectorAll('.library-choice').length"), 4);
   assert.equal(await evaluate("document.querySelectorAll('.doc').length"), 0, 'adding an empty library clears old rows');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#document-columns')).display"), 'none', 'empty libraries show guidance without column headings');
   assert.equal(await evaluate("document.querySelector('#tags').textContent.includes('个人标签')"), false);
   await chooseLibrary('personal');
   await waitFor("document.querySelectorAll('.doc').length === 1");
+  assert.equal(await evaluate("document.querySelector('#document-columns').hidden"), false, 'returning to files restores their headings');
   assert.deepEqual(runtimeErrors, []);
   console.log('UI smoke passed: multi-library add/switch/failure isolation, stale-event rejection, responsive picker,  520/820/1200px status/action exclusivity, stable row geometry, multi-tag toggles, one completion toast and non-shifting toolbar popover.');
 } finally {

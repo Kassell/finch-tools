@@ -924,6 +924,7 @@ function renderDocs(focusId?: string): void {
   // menu: hide it, and the next render puts it back on the row it belongs to.
   if (!survivor) { if (docs.length || !rowMenuDoc) closeRowMenu(); else hideRowMenu(); }
   byId('count').textContent = tr('totalFiles', { count: total });
+  byId('document-columns').hidden = docs.length === 0;
   const target = byId('documents'); target.replaceChildren();
   if (!docs.length) target.append(buildEmptyState());
   for (const doc of docs) target.append(buildRow(doc));

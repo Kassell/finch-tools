@@ -68,3 +68,27 @@ test('paths remain plain text and the empty layout centers within the pane using
   assert.match(css, /\.empty-illustration[^}]*var\(--finch-accent/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
 });
+
+test('column headers are hidden for every empty state and restored only when rows exist', async () => {
+  const begin = view.indexOf('function renderDocs('), finish = view.indexOf('\n/**', begin);
+  const rendered = await transform(view.slice(begin, finish), { loader: 'ts' });
+  const elements = new Map();
+  const byId = id => {
+    if (!elements.has(id)) elements.set(id, { children: [], hidden: false, replaceChildren(...items) { this.children = items; }, append(...items) { this.children.push(...items); } });
+    return elements.get(id);
+  };
+  const context = createContext({ byId, docs: [], total: 0, rowMenuDoc: null, rowMenuFlyoutOpen: false,
+    closeRowMenu() {}, hideRowMenu() {}, restoreRowMenu() {}, tr: () => '', buildEmptyState: () => ({ empty: true }), buildRow: doc => ({ doc }) });
+  runInContext(rendered.code, context);
+  for (const mode of ['library', 'tag', 'loading', 'scanning']) {
+    context.docs = []; runInContext('renderDocs()', context);
+    assert.equal(byId('document-columns').hidden, true, mode);
+    assert.equal(byId('documents').children[0].empty, true);
+  }
+  context.docs = [{ id: 'file' }]; context.total = 1; runInContext('renderDocs()', context);
+  assert.equal(byId('document-columns').hidden, false);
+  context.docs = []; context.total = 0; runInContext('renderDocs()', context);
+  assert.equal(byId('document-columns').hidden, true, 'removing the final row hides column labels again');
+  const html = await readFile(new URL('../src/view.html', import.meta.url), 'utf8');
+  assert.match(html, /id="document-columns"[^>]*\bhidden\b/, 'headers also stay hidden before first render');
+});
