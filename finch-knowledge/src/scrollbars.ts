@@ -1,4 +1,4 @@
-export const SCROLL_AREAS = '.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker';
+export const SCROLL_AREAS = '.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list';
 
 /** Capture scrolls from existing and dynamically rendered panes without intercepting input. */
 export function wireScrollbars(doc: Document = document, idleMs = 900): () => void {

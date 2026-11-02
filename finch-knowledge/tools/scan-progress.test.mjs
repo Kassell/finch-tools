@@ -15,7 +15,7 @@ function fixture() {
   const element = id => {
     if (!elements.has(id)) {
       const classes = new Set();
-      elements.set(id, { hidden: false, attrs: {}, style: {}, classList: {
+      elements.set(id, { hidden: false, attrs: {}, style: {}, replaceChildren() {}, classList: {
         toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); }, contains: name => classes.has(name),
       }, setAttribute(key, value) { this.attrs[key] = value; }, removeAttribute(key) { delete this.attrs[key]; } });
     }

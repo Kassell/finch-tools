@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transform } from 'esbuild';
+import { isLibraryScoped } from '../dist/index.js';
 
 const view = await readFile(new URL('../src/view.ts', import.meta.url), 'utf8');
 const declarations = view.slice(0, view.indexOf('\nmountStaticIcons();')).replace(/^import .*\r?\n/gm, '');
@@ -13,7 +14,7 @@ function fixture() {
     if (!elements.has(id)) elements.set(id, { attrs: {}, hidden: false, disabled: false, textContent: '', setAttribute(key, value) { this.attrs[key] = value; } });
     return elements.get(id);
   };
-  const context = createContext({ window: { finch: { postMessage(message) { sent.push(message); } } }, document: { getElementById: element } });
+  const context = createContext({ isLibraryScoped, window: { finch: { postMessage(message) { sent.push(message); } } }, document: { getElementById: element } });
   runInContext(code, context);
   const run = script => runInContext(script, context);
   run("libraryPath = '/library'; renderActivity = renderDocs = () => {};");

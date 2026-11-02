@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transform } from 'esbuild';
+import { isLibraryScoped } from '../dist/index.js';
 const source = (await readFile(new URL('../src/view.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const { code } = await transform(source.slice(0, source.indexOf('\nmountStaticIcons();')).replace(/^import .*\n/gm, ''), { loader: 'ts' });
 class Element {
@@ -19,7 +20,7 @@ class Element {
 function fixture() {
   const elements = new Map(), requests = [];
   const element = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
-  const context = createContext({ window: { finch: { postMessage: message => requests.push(message) } }, document: { getElementById: element, createElement: () => new Element() }, URL, location: { href: 'http://localhost/view.html' }, iconForFile: () => 'text.svg', previewRoute: () => 'text', Element,
+  const context = createContext({ isLibraryScoped, window: { finch: { postMessage: message => requests.push(message) } }, document: { getElementById: element, createElement: () => new Element() }, URL, location: { href: 'http://localhost/view.html' }, iconForFile: () => 'text.svg', previewRoute: () => 'text', Element,
     ...Object.fromEntries(['Files', 'Folder', 'FolderOpen', 'ChevronRight', 'Circle', 'PenLine', 'Trash2', 'TagIcon', 'CircleCheck', 'CircleAlert', 'Loader', 'Eye', 'EllipsisVertical'].map(name => [name, name])),
   });
   runInContext(code, context);

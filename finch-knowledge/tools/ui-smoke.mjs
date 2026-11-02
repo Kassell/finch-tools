@@ -46,11 +46,20 @@ async function launch() {
 
 function fixture() {
   let listener;
-  const tags = [{ id: 'a', name: '工作', color: 'blue' }, { id: 'b', name: '收藏', color: 'purple' }, { id: 'c', name: '重要', color: 'red' }];
-  const docs = ['unassigned.md', 'tagged.md'].map((name, index) => ({ id: String(index), path: `/library/notes/${name}`, name: `notes/${name}`, tags: index ? ['a', 'b'] : [], status: 'ready', chunks: 1, indexedChunks: 1, added_at: 1, indexed_at: 1, size_bytes: index ? 1024 : 0, modified_at: Date.UTC(2020 + index, 0, 1), file_type: 'md' }));
-  const directories = [{ path: '', parent: null, name: '', count: 2 }, { path: 'notes', parent: '', name: 'notes', count: 2 }];
+  let tags = [{ id: 'a', name: '工作', color: 'blue' }, { id: 'b', name: '收藏', color: 'purple' }, { id: 'c', name: '重要', color: 'red' }];
+  let docs = ['unassigned.md', 'tagged.md'].map((name, index) => ({ id: String(index), path: `/library/notes/${name}`, name: `notes/${name}`, tags: index ? ['a', 'b'] : [], status: 'ready', chunks: 1, indexedChunks: 1, added_at: 1, indexed_at: 1, size_bytes: index ? 1024 : 0, modified_at: Date.UTC(2020 + index, 0, 1), file_type: 'md' }));
+  let directories = [{ path: '', parent: null, name: '', count: 2 }, { path: 'notes', parent: '', name: 'notes', count: 2 }];
+  const libraries = [{ id: 'work', root: '/library', name: '工作资料' }, { id: 'personal', root: '/personal', name: '个人资料' }, { id: 'offline', root: '/offline', name: '离线资料' }];
+  let current = libraries[0], libraryVersion = 1;
+  const stores = new Map([['work', { tags, docs, directories }], ['personal', {
+    tags: [{ id: 'private', name: '个人标签', color: 'green' }],
+    docs: [{ ...docs[0], id: 'private-file', path: '/personal/private.md', name: 'private.md', tags: ['private'] }],
+    directories: [{ path: '', parent: null, name: '', count: 1 }],
+  }]]);
+  const libraryInfo = () => ({ indexStorage: current.id === 'personal' ? 'local' : 'source', root: current.root, version: libraryVersion, activeId: current.id, name: current.name, libraries, selected: true, entered: true, isDefault: false, documents: docs.length, tags: tags.length, unavailable: null });
   const allTags = () => [{ id: 'default', name: '', count: docs.filter(doc => !doc.tags.length).length }, ...tags.map(tag => ({ ...tag, count: docs.filter(doc => doc.tags.includes(tag.id)).length }))];
-  const emit = message => listener?.(JSON.parse(JSON.stringify(message)));
+  const emit = message => listener?.(JSON.parse(JSON.stringify({ root: current.root, libraryVersion, ...message })));
+  window.testEmit = emit;
   window.testToasts = []; window.testColors = []; window.testRequests = [];
   window.testDensity = mode => {
     tags.splice(0, tags.length, ...(mode === 'many' ? Array.from({ length: 80 }, (_, i) => ({ id: `t${i}`, name: `标签 ${i}`, color: 'gray' })) : []));
@@ -61,10 +70,22 @@ function fixture() {
     postMessage(message) {
       window.testRequests.push(message);
       queueMicrotask(() => {
-        if (message.type === 'ready' || message.type === 'tags') {
+        if (message.type === 'libraryAction' || message.type === 'librarySwitch') {
+          if (message.type === 'libraryAction') {
+            if (!libraries.some(item => item.id === 'added')) {
+              libraries.push({ id: 'added', name: '新增资料', root: '/added' });
+              stores.set('added', { tags: [], docs: [], directories: [{ path: '', parent: null, name: '', count: 0 }] });
+            }
+          }
+          const entry = libraries.find(item => item.id === (message.type === 'libraryAction' ? 'added' : message.id));
+          if (!entry || !stores.has(entry.id)) { emit({ type: 'error', requestId: message.requestId, error: 'Offline fixture' }); return; }
+          current = entry; libraryVersion++;
+          ({ tags, docs, directories } = stores.get(entry.id));
+          emit({ type: 'libraryDone', mode: 'switch', requestId: message.requestId, library: libraryInfo() });
+        } else if (message.type === 'ready' || message.type === 'tags') {
           if (message.type === 'ready') emit({ type: 'finch:env', locale: 'zh-CN', view: 'appView' });
           emit({ type: 'tags', requestId: message.requestId, tags: allTags(), directories,
-            library: { root: '/library', selected: true, entered: true, isDefault: false, documents: 2, tags: 3, unavailable: null },
+            library: libraryInfo(),
             environment: { ready: true, usable: true, running: false, steps: ['lancedb', 'anydoc', 'ocr'].map(id => ({ id, status: 'ready' })) } });
         } else if (message.type === 'page') {
           const ordered = docs.filter(doc => !message.tagId || (message.tagId === 'default' ? !doc.tags.length : doc.tags.includes(message.tagId)));
@@ -127,7 +148,8 @@ try {
   const waitFor = async expression => {
     const until = Date.now() + 6000;
     while (Date.now() < until) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 40)); }
-    throw new Error(`UI did not settle: ${expression}; ${runtimeErrors.join('; ')}`);
+    const state = await evaluate("({library:document.querySelector('#library-path')?.textContent,rows:[...document.querySelectorAll('.doc-title')].map(node=>node.textContent),requests:window.testRequests.slice(-8),status:document.querySelector('#status')?.textContent})");
+    throw new Error(`UI did not settle: ${expression}; ${runtimeErrors.join('; ')}; ${JSON.stringify(state)}`);
   };
   await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 850, deviceScaleFactor: 1, mobile: false });
   await call('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/dist/view.html` });
@@ -475,8 +497,44 @@ try {
   const fallback = await evaluate("(() => { const r=document.querySelector('#status').getBoundingClientRect(); return {top:r.top,bottom:r.bottom,width:r.width}; })()");
   assert.ok(fallback.top >= 0 && fallback.top <= 20 && fallback.bottom < 150 && fallback.width > 100, 'completion fallback stays at the top, never the footer');
   await waitFor("document.querySelector('#status').textContent === ''");
+  // Library switching is intentionally a small picker, with no rename/remove controls.
+  const chooseLibrary = async id => {
+    await click('#library-menu-button');
+    await click(`[data-library-id="${id}"] .library-choice`);
+  };
+  for (const width of [1200, 820, 520]) {
+    await call('Emulation.setDeviceMetricsOverride', { width, height:850, deviceScaleFactor:1, mobile:false });
+    await click('#library-menu-button');
+    const picker = await evaluate("(() => { const menu=document.querySelector('#library-menu').getBoundingClientRect(); return {left:menu.left,right:menu.right,top:menu.top,bottom:menu.bottom,count:document.querySelectorAll('.library-choice').length,current:document.querySelector('.library-choice[aria-checked=true]')?.closest('.library-entry').dataset.libraryId,extra:document.querySelectorAll('.library-entry-actions').length}; })()");
+    assert.equal(picker.count, 3); assert.equal(picker.current, 'work'); assert.equal(picker.extra, 0);
+    assert.ok(picker.left >= 0 && picker.right <= width && picker.top >= 0 && picker.bottom <= 850, `picker fits ${width}px: ${JSON.stringify(picker)}`);
+    await key('Escape',27);
+  }
+  await chooseLibrary('personal');
+  await waitFor("document.querySelectorAll('.doc').length === 1 && document.querySelector('.doc-title').textContent.includes('private.md')");
+  assert.equal(await evaluate("document.querySelector('#library-path').textContent"), '个人资料');
+  assert.equal(await evaluate("document.querySelector('#library-note').textContent.includes('索引和标签独立保存在本机')"), true, 'remote library explains its local independent index');
+  assert.equal(await evaluate("document.querySelector('#tags').textContent.includes('个人标签')"), true);
+  assert.equal(await evaluate("document.querySelector('#library-title').textContent"), '全部资料');
+  assert.equal(await evaluate("window.testRequests.filter(item=>item.type==='page').at(-1).libraryRoot"), '/personal');
+  await chooseLibrary('offline');
+  await waitFor("!document.querySelector('#library-menu-button').disabled");
+  assert.equal(await evaluate("document.querySelector('#library-path').textContent"), '个人资料', 'failed switch keeps the usable library');
+  // Returning A -> B -> A must reject old same-root data, not just other-root data.
+  await chooseLibrary('work');
+  await waitFor("document.querySelectorAll('.doc').length === 2");
+  await evaluate("window.testEmit({type:'changed',root:'/library',libraryVersion:1,tags:[{id:'stale',name:'STALE',count:1}],directories:[],change:{kind:'tagColor'}}); window.testEmit({type:'scanStarted',root:'/library',libraryVersion:1});");
+  assert.equal(await evaluate("document.querySelector('#tags').textContent.includes('STALE')"), false);
+  assert.equal(await evaluate("document.querySelector('#activity').hidden"), true, 'old scan cannot restart the current progress bar');
+  await click('#library-menu-button'); await click('#library-location');
+  await waitFor("document.querySelector('#library-path').textContent === '新增资料'");
+  assert.equal(await evaluate("document.querySelectorAll('.library-choice').length"), 4);
+  assert.equal(await evaluate("document.querySelectorAll('.doc').length"), 0, 'adding an empty library clears old rows');
+  assert.equal(await evaluate("document.querySelector('#tags').textContent.includes('个人标签')"), false);
+  await chooseLibrary('personal');
+  await waitFor("document.querySelectorAll('.doc').length === 1");
   assert.deepEqual(runtimeErrors, []);
-  console.log('UI smoke passed: 520/820/1200px status/action exclusivity, stable row geometry, multi-tag toggles, one completion toast and non-shifting toolbar popover.');
+  console.log('UI smoke passed: multi-library add/switch/failure isolation, stale-event rejection, responsive picker,  520/820/1200px status/action exclusivity, stable row geometry, multi-tag toggles, one completion toast and non-shifting toolbar popover.');
 } finally {
   if (socket?.readyState === 1) {
     socket.send(JSON.stringify({ id: ++serial, method: 'Browser.close' }));

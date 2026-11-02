@@ -10,6 +10,8 @@ import { loadEngine as loadOcrEngine, ENGINE_VERSION as OCR_ENGINE_VERSION, isEn
 import { listModels as listOcrModels } from './ocr-runner.js';
 import { loadLanceDB, isEngineInstalled as isLanceEngineInstalled, engineVersion as lanceEngineVersion } from './lancedb-engine.js';
 import { LibraryGate } from './library-gate.js';
+import { LibraryRegistry, LIBRARIES_STORAGE_KEY } from './libraries.js';
+import { isLibraryScoped } from './library-scope.js';
 import { AutoScanCooldown } from './scan-cooldown.js';
 import { EnvironmentManager, type EnvironmentSnapshot } from './environment.js';
 import { createKnowledgeComposer } from './composer.js';
@@ -26,12 +28,15 @@ export { openInPreview, openListedDocument, previewRoute } from './preview.js';
 export { inScope, UNCLASSIFIED } from './scope.js';
 export { expandImportTargets, MAX_BATCH_FILES } from './tool-import.js';
 export { LibraryGate } from './library-gate.js';
+export { LibraryRegistry, LIBRARIES_STORAGE_KEY } from './libraries.js';
+export { isLibraryScoped } from './library-scope.js';
+export { inspectSourceFilesystem, remoteIndexKey, remoteIndexRoot } from './index-location.js';
 export { EnvironmentManager } from './environment.js';
 export { downloadWithProgress, formatBytes, oncePerPercent } from './download.js';
 
 const execFileAsync = promisify(execFile);
 export const KNOWLEDGE_ACTIONS = ['search', 'tags', 'documents', 'library', 'environment', 'index', 'sync', 'create_tag', 'rename_tag', 'delete_tag', 'tag_document', 'untag_document'] as const;
-interface ViewRequest { type?: string; directory?: string; color?: string; requestId?: string; id?: string; ids?: string[]; key?: string; tagId?: string | null; name?: string; size?: number; data?: string; query?: string; offset?: number; sort?: string; descending?: boolean; mode?: string }
+interface ViewRequest { type?: string; libraryRoot?: string; libraryVersion?: number; directory?: string; color?: string; requestId?: string; id?: string; ids?: string[]; key?: string; tagId?: string | null; name?: string; size?: number; data?: string; query?: string; offset?: number; sort?: string; descending?: boolean; mode?: string }
 function result(text: string, isError = false): finch.ToolResult {
   return { content: [{ type: 'text', text }], isError };
 }
@@ -77,6 +82,8 @@ async function revealDirectory(path: string): Promise<void> {
 export function activate(ctx: finch.MiniToolContext): void {
   const panels = new Set<finch.AppPanel>();
   const gate = new LibraryGate();
+  const libraries = new LibraryRegistry(() => ctx.storage.get(LIBRARIES_STORAGE_KEY), data => ctx.storage.set(LIBRARIES_STORAGE_KEY, data));
+  let libraryVersion = 0;
   const bound = new WeakSet<finch.AppPanel>();
   const t = (key: string, values?: Record<string, string | number>) => ctx.i18n.t(key, values);
   const forwardProgress = (message: string): void => {
@@ -99,10 +106,11 @@ export function activate(ctx: finch.MiniToolContext): void {
   let unavailable: string | null = null;
   let setupComplete = false;
 
-  async function swapTo(root: string): Promise<void> {
+  async function swapTo(root: string, commit?: (root: string) => Promise<void>): Promise<void> {
     scanController?.abort();
     await scanning?.catch(() => {});
     const versions = new Map<string, number>();
+    const selectionVersion = libraryVersion + 1;
     const next: KnowledgeStore = await openSourceDirectory(root, ctx.storagePath, { progress: forwardProgress, requireEngine,
       onStatusChange(path, phase) {
         if (disposed || activeStore !== next) return;
@@ -110,7 +118,7 @@ export function activate(ctx: finch.MiniToolContext): void {
         versions.set(path, version);
         const publish = (document?: unknown) => {
           if (disposed || activeStore !== next || versions.get(path) !== version) return;
-          for (const panel of panels) void panel.postMessage({ type: 'documentStatus', root: next.directoryRoot, path, phase, version, document }).catch(() => {});
+          for (const panel of panels) void panel.postMessage({ type: 'documentStatus', root: next.directoryRoot, libraryVersion: selectionVersion, path, phase, version, document }).catch(() => {});
         };
         if (phase === 'processing') publish();
         else {
@@ -120,7 +128,11 @@ export function activate(ctx: finch.MiniToolContext): void {
         }
       },
     });
+    // Persist the selection before exposing a new store. A failed save keeps the old library usable.
+    try { await commit?.(next.directoryRoot!); }
+    catch (error) { await next.close(); throw error; }
     const previous = activeStore;
+    libraryVersion++;
     state.root = next.directoryRoot!;
     state.store = next;
     await Promise.allSettled([...statusTasks]);
@@ -131,8 +143,10 @@ export function activate(ctx: finch.MiniToolContext): void {
     setupComplete = await ctx.storage.get<boolean>('setupComplete') === true;
     const saved = await ctx.storage.get<string>('sourceDirectory');
     // A missing directory (unmounted drive) keeps the pointer so it resumes once the volume is back.
-    if (!saved || saved === state.root) return;
-    try { await swapTo(saved); } catch { unavailable = saved; }
+    if (saved && saved !== state.root) {
+      try { await swapTo(saved); } catch { unavailable = saved; }
+    }
+    await libraries.load(state.root || saved);
   })();
 
   /**
@@ -153,27 +167,27 @@ export function activate(ctx: finch.MiniToolContext): void {
 
   async function syncSources(report?: (message: string, percent: number) => void, signal?: AbortSignal): Promise<SyncOutcome> {
     if (scanning) return scanning;
-    const store = state.store;
+    const store = state.store, scopeVersion = libraryVersion;
     scanController = new AbortController();
     const controller = scanController;
     const abort = () => controller.abort();
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) controller.abort();
-    for (const panel of panels) void panel.postMessage({ type: 'scanStarted', root: store.directoryRoot }).catch(() => {});
+    for (const panel of panels) void panel.postMessage({ type: 'scanStarted', root: store.directoryRoot, libraryVersion: scopeVersion }).catch(() => {});
     scanning = gate.write(async () => {
       await scanCooldown.record(store.directoryRoot);
       return scanSourceDirectory(store, (name, percent) => {
         const message = t('progress.sync', { name });
         report?.(message, percent);
-        for (const panel of panels) void panel.postMessage({ type: 'scanProgress', root: store.directoryRoot, message, percent }).catch(() => {});
+        for (const panel of panels) void panel.postMessage({ type: 'scanProgress', root: store.directoryRoot, libraryVersion: scopeVersion, message, percent }).catch(() => {});
       }, controller.signal);
     }).then(async outcome => {
       if (!controller.signal.aborted) await scanCooldown.record(store.directoryRoot);
       if (!disposed && activeStore === store) await broadcast();
-      for (const panel of panels) void panel.postMessage({ type: 'scanDone', root: store.directoryRoot, sync: outcome }).catch(() => {});
+      for (const panel of panels) void panel.postMessage({ type: 'scanDone', root: store.directoryRoot, libraryVersion: scopeVersion, sync: outcome }).catch(() => {});
       return outcome;
     }).catch(error => {
-      for (const panel of panels) void panel.postMessage({ type: 'scanFailed', root: store.directoryRoot, error: errorText(error) }).catch(() => {});
+      for (const panel of panels) void panel.postMessage({ type: 'scanFailed', root: store.directoryRoot, libraryVersion: scopeVersion, error: errorText(error) }).catch(() => {});
       throw error;
     }).finally(() => { scanning = undefined; signal?.removeEventListener('abort', abort); });
     return scanning;
@@ -278,8 +292,10 @@ export function activate(ctx: finch.MiniToolContext): void {
 
   async function libraryInfo(): Promise<Record<string, unknown>> {
     // summary() reads the catalogue only, so the first paint never waits on an engine download.
-    const { documents, tags } = activeStore ? await state.store.summary() : { documents: 0, tags: [] };
-    return { root: state.root, selected: Boolean(activeStore), entered: setupComplete, isDefault: false, documents, tags: tags.length, unavailable };
+    const store = activeStore, root = state.root, version = libraryVersion;
+    const { documents, tags } = store ? await store.summary() : { documents: 0, tags: [] };
+    const current = libraries.forRoot(root);
+    return { root, version, indexStorage: store?.indexStorage, indexRoot: store?.root, name: current?.name, activeId: current?.id, libraries: libraries.list(), selected: Boolean(store), entered: setupComplete, isDefault: false, documents, tags: tags.length, unavailable };
   }
 
   const errorText = (error: unknown): string => {
@@ -299,10 +315,14 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (message.startsWith('Unsupported knowledge index format.')) return t('library.unsupportedIndex');
     if (message === 'Choose a library directory.' || message === 'Choose an absolute library directory.' || message === 'Choose a directory, not a file.') return t('library.invalidDirectory');
     if (message === 'This is already the working library directory.') return t('library.same');
+    if (message === 'Library is no longer registered.') return t('library.missing');
+    if (message.startsWith('Unable to determine the source filesystem') || message === 'Drive type is unavailable.' || message === 'Network share identity is unavailable.') return t('library.filesystemUnavailable');
+    if (message.startsWith('The network source is disconnected or mapped')) return t('library.networkUnavailable');
+    if (message === 'Network libraries require a local Finch cache directory.') return t('library.localCacheRequired');
     if (message === 'The library folder is no longer on disk.') return t('library.unavailable');
     return message;
   };
-  const supported = new Set(['enterLibrary', 'ready', 'page', 'locate', 'tags', 'tagCreate', 'tagRename', 'tagColor', 'tagDelete', 'tagToggle', 'tagReorder', 'search', 'reveal', 'sync', 'library', 'libraryAction', 'libraryReveal', 'environment', 'environmentInstall', 'environmentHelp']);
+  const supported = new Set(['enterLibrary', 'ready', 'page', 'locate', 'tags', 'tagCreate', 'tagRename', 'tagColor', 'tagDelete', 'tagToggle', 'tagReorder', 'search', 'reveal', 'sync', 'library', 'libraryAction', 'librarySwitch', 'libraryReveal', 'environment', 'environmentInstall', 'environmentHelp']);
   const retired = new Set(['addFiles', 'uploadStart', 'uploadChunk', 'uploadFinish', 'uploadAbort', 'uploadCancel', 'delete', 'backup']);
 
   /**
@@ -311,9 +331,16 @@ export function activate(ctx: finch.MiniToolContext): void {
    */
   async function broadcast(change?: { kind: 'tagToggle' | 'tagColor'; documentId?: string; tags?: string[] }): Promise<void> {
     composerAction.notifyUpdate();
-    const tags = await state.store.tags();
-    const directories = await state.store.directories();
-    for (const panel of panels) void panel.postMessage({ type: 'changed', tags, directories, ...(change ? { change } : {}) }).catch(() => {});
+    const store = state.store, root = state.root, version = libraryVersion;
+    const tags = await store.tags();
+    const directories = await store.directories();
+    if (store !== activeStore) return;
+    for (const panel of panels) void panel.postMessage({ type: 'changed', root, libraryVersion: version, tags, directories, ...(change ? { change } : {}) }).catch(() => {});
+  }
+  async function broadcastLibraries(except?: finch.AppPanel): Promise<void> {
+    composerAction.notifyUpdate();
+    const library = await libraryInfo();
+    await Promise.allSettled([...panels].filter(panel => panel !== except).map(panel => panel.postMessage({ type: 'libraries', library })));
   }
   async function indexedPage(tagId: string | null, sort: DocumentSort, offset: number, directory: string | null = null, descending?: boolean) {
     const store = state.store;
@@ -329,10 +356,13 @@ export function activate(ctx: finch.MiniToolContext): void {
     }
     if (!supported.has(message.type ?? '')) return;
     const requestId = typeof message.requestId === 'string' ? message.requestId.slice(0, 80) : '';
-    const reply = (payload: Record<string, unknown>) => panel.postMessage({ requestId, ...payload });
+    let requestRoot = state.root, requestVersion = libraryVersion;
+    const reply = (payload: Record<string, unknown>) => panel.postMessage({ requestId, root: requestRoot, libraryVersion: requestVersion, ...payload });
     try {
       await ready;
-      if (!activeStore && !['ready', 'library', 'libraryAction', 'environment', 'environmentInstall', 'environmentHelp'].includes(message.type!)) {
+      requestRoot = state.root; requestVersion = libraryVersion;
+      if (isLibraryScoped(message.type!) && ((message.libraryRoot !== undefined && message.libraryRoot !== state.root) || (message.libraryVersion !== undefined && message.libraryVersion !== libraryVersion))) throw new Error(t('library.changed'));
+      if (!activeStore && !['ready', 'library', 'libraryAction', 'librarySwitch', 'environment', 'environmentInstall', 'environmentHelp'].includes(message.type!)) {
         if (message.type === 'page') { await reply({ type: 'page', documents: [], total: 0, offset: 0 }); return; }
         throw new Error(t('library.chooseFirst'));
       }
@@ -376,21 +406,24 @@ export function activate(ctx: finch.MiniToolContext): void {
           await revealDirectory(state.root);
           await reply({ type: 'libraryRevealed' });
           break;
-        case 'libraryAction': {
-          if (message.mode !== 'choose') throw new Error(t('library.invalidDirectory'));
-          const title = t('library.title.choose', { root: state.root });
-          const chosen = await pickDirectory(title, state.root);
+        case 'libraryAction':
+        case 'librarySwitch': {
+          if (message.type === 'libraryAction' && message.mode !== 'choose') throw new Error(t('library.invalidDirectory'));
+          const chosen = message.type === 'librarySwitch' ? libraries.find(message.id ?? '').root
+            : await pickDirectory(t('library.title.choose', { root: state.root }), state.root);
           if (!chosen) { await reply({ type: 'libraryCanceled' }); break; }
-          // Switching opens the chosen directory in place, regardless of its contents.
-          // Never copy the previous library into a new directory.
+          // Open in place; registering and switching never copy or rename source files.
           scanController?.abort();
           await scanning?.catch(() => {});
           const previousRoot = state.root;
           const existing = (await stat(join(chosen, '.knowledge')).catch(() => null))?.isDirectory();
-          await gate.exclusive(() => swapTo(chosen));
-          await ctx.storage.set('sourceDirectory', state.root);
+          await gate.exclusive(() => swapTo(chosen, async root => {
+            await libraries.add(root);
+            await ctx.storage.set('sourceDirectory', root);
+          }));
           unavailable = null;
-          await reply({ type: 'libraryDone', mode: existing ? 'open' : 'create', previousRoot, library: await libraryInfo(), environment: await environment.probe() });
+          await reply({ type: 'libraryDone', mode: message.type === 'librarySwitch' ? 'switch' : existing ? 'open' : 'create', previousRoot, library: await libraryInfo(), environment: await environment.probe() });
+          await broadcastLibraries(panel);
           await broadcast();
           if (setupComplete) void autoScan().catch(error => forwardProgress(errorText(error)));
           break;
@@ -477,6 +510,7 @@ export function activate(ctx: finch.MiniToolContext): void {
           const root = state.root;
           // Answer first so the page can show the hairline, then stream progress into it.
           await reply({ type: 'syncStarted' });
+          if (root !== state.root) throw new Error(t('library.changed'));
           const outcome = await syncSources(
             (message, percent) => { void panel.postMessage({ type: 'progress', message, percent }).catch(() => {}); },
             undefined,
@@ -508,10 +542,10 @@ export function activate(ctx: finch.MiniToolContext): void {
     );
   }));
 
-  async function findTag(value: string): Promise<{ id: string; name: string; count: number }> {
+  async function findTag(value: string, store = state.store): Promise<{ id: string; name: string; count: number }> {
     const requested = value.trim();
     if (!requested) throw new Error(t('tool.tagRequired'));
-    const tags = await state.store.tags();
+    const tags = await store.tags();
     const tag = tags.find((item) => item.id === requested ||
       (item.id === DEFAULT_TAG ? t('tool.uncategorized') : item.name).toLowerCase() === requested.toLowerCase());
     if (!tag) throw new Error(t('tool.tagMissing', { name: requested }));
@@ -577,6 +611,7 @@ export function activate(ctx: finch.MiniToolContext): void {
         if (action === 'library') {
           const info = await libraryInfo();
           return result(t('tool.libraryEntry', { root: String(info.root), documents: Number(info.documents), tags: Number(info.tags) }) +
+            (info.indexRoot ? `\n${t('tool.indexLocation', { path: String(info.indexRoot) })}` : '') +
             (info.isDefault ? `\n${t('tool.libraryDefault')}` : '') +
             (info.unavailable ? `\n${t('tool.libraryUnavailable', { path: String(info.unavailable) })}` : ''));
         }
@@ -588,6 +623,15 @@ export function activate(ctx: finch.MiniToolContext): void {
             ...steps.map((step) => `- ${step.id}: ${step.status}${step.detail ? ` (${step.detail})` : ''}${step.message ? ` — ${step.message}` : ''}${step.error ? `\n  ${step.error}` : ''}`),
           ].join('\n'));
         }
+        // Bind every subsequent store access to the library selected at call start.
+        // If the user switches during an await, fail safely instead of reading or editing the next library.
+        return await inSelectedLibrary(activeStore);
+        async function inSelectedLibrary(selected: KnowledgeStore | undefined): Promise<finch.ToolResult> {
+        const state = { get store(): KnowledgeStore {
+          if (!selected) throw new Error(t('library.chooseFirst'));
+          if (selected !== activeStore) throw new Error(t('library.changed'));
+          return selected;
+        } };
         if (action === 'tags') {
           const tags = await state.store.tags();
           return result(tags.map((tag) => t('tool.tagEntry', {
@@ -601,14 +645,14 @@ export function activate(ctx: finch.MiniToolContext): void {
           return result(t('tool.tagCreated', { name: tag.name, id: tag.id }));
         }
         if (action === 'rename_tag') {
-          const tag = await findTag(typeof input.tag === 'string' ? input.tag : '');
+          const tag = await findTag(typeof input.tag === 'string' ? input.tag : '', state.store);
           const name = typeof input.name === 'string' ? input.name.trim() : '';
           await gate.write(() => state.store.renameTag(tag.id, name));
           await broadcast();
           return result(t('tool.tagRenamed', { name, id: tag.id }));
         }
         if (action === 'delete_tag') {
-          const tag = await findTag(typeof input.tag === 'string' ? input.tag : '');
+          const tag = await findTag(typeof input.tag === 'string' ? input.tag : '', state.store);
           // Documents are never deleted with the tag, but re-filing a batch by accident should
           // not be silent either, so a tag that still holds documents needs an explicit retry.
           if (tag.count > 0 && input.force !== true) {
@@ -620,7 +664,7 @@ export function activate(ctx: finch.MiniToolContext): void {
         }
         if (action === 'tag_document' || action === 'untag_document') {
           // A document may carry several tags; these add or remove one without touching the rest.
-          const tag = await findTag(typeof input.tag === 'string' ? input.tag : '');
+          const tag = await findTag(typeof input.tag === 'string' ? input.tag : '', state.store);
           const id = typeof input.documentId === 'string' ? input.documentId : '';
           const removing = action === 'untag_document';
           const updated = await gate.write(async () => {
@@ -632,6 +676,7 @@ export function activate(ctx: finch.MiniToolContext): void {
         }
         if (action === 'sync') {
           // Re-indexes the sources that changed and drops the ones that are gone.
+          void state.store;
           const outcome = await syncSources(
             (message, percent) => exec.progress?.report({ message, percent }),
             exec.signal,
@@ -733,7 +778,7 @@ export function activate(ctx: finch.MiniToolContext): void {
           return result(lines.join('\n'), failed.length > 0);
         }
         let tagId: string | null = null;
-        if (typeof input.tag === 'string' && input.tag.trim()) tagId = (await findTag(input.tag)).id;
+        if (typeof input.tag === 'string' && input.tag.trim()) tagId = (await findTag(input.tag, state.store)).id;
         if (action === 'documents') {
           const offset = typeof input.offset === 'number' && Number.isFinite(input.offset) ? input.offset : 0;
           const limit = typeof input.limit === 'number' && Number.isFinite(input.limit) ? input.limit : 50;
@@ -755,6 +800,7 @@ export function activate(ctx: finch.MiniToolContext): void {
         return result(matches.map((row, index) =>
           `[${index + 1}] ${row.name} · ${t('tool.chunk', { number: row.chunk })} · ${tags.find((tag) => tag.id === row.tag_id)?.name || t('tool.uncategorized')} · ${t('tool.documentId', { id: row.document_id })}\n${t('tool.source')}: ${row.path}\n${row.text}`,
         ).join('\n\n---\n\n'));
+        }
       } catch (error) {
         return result(errorText(error), true);
       }

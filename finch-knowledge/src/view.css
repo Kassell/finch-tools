@@ -205,6 +205,16 @@ svg { flex: none; width: 18px; height: 18px; }
   background: var(--finch-bg-elevated, var(--fallback-panel));
   box-shadow: var(--finch-shadow-md, 0 16px 40px #0003);
 }
+.library-list { max-height: min(300px, 40dvh); overflow-y: auto; overscroll-behavior: contain; }
+.library-entry { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; border-radius: var(--finch-radius-sm, 8px); }
+.library-entry:hover, .library-entry:focus-within { background: var(--finch-bg-hover, var(--fallback-hover)); }
+.library-choice { min-width: 0; min-height: 46px; gap: 6px; }
+.library-choice .library-entry-label { display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.library-entry-name, .library-entry-root { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-entry-root { color: var(--finch-text-tertiary, var(--fallback-muted)); font-family: var(--finch-font-mono, 'JetBrains Mono', monospace); font-size: 10px; font-weight: 400; }
+.library-choice .library-entry-check { display: grid; flex: 0 0 16px; place-items: center; width: 16px; }
+.library-entry-check svg { width: 14px; height: 14px; }
+.library-choice[aria-checked="true"] { color: var(--finch-text-primary, var(--fallback-ink)); }
 .menu-caption { margin: 0; padding: 7px 9px; color: var(--finch-text-tertiary, var(--fallback-muted)); font-size: 11px; line-height: 1.45; }
 /* The leading note in a row menu is a fact, not an action: no hover, no pointer. */
 .row-menu .menu-caption { pointer-events: none; }
@@ -583,23 +593,23 @@ dialog::backdrop { background: color-mix(in srgb, var(--finch-bg-root, #17221e) 
 @media (max-width: 600px) { .documents:has(> .library-empty) { padding: 24px 14px; } .empty-illustration { width: 56px; height: 56px; margin-bottom: 16px; border-radius: 18px; } .empty-heading { font-size: 18px; } .empty-description { font-size: 12px; } .empty-directory { margin-top: 16px; } .empty-steps { gap: 10px; margin-top: 18px; } }
 
 /* Finch-style transient scrollbars: preserve native scrolling and a constant gutter. */
-:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker) {
+:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list) {
   --scrollbar-thumb: transparent;
   scrollbar-gutter: stable;
 }
-:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker):is(:hover, .is-scrolling) {
+:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list):is(:hover, .is-scrolling) {
   --scrollbar-thumb: color-mix(in srgb, var(--finch-text-tertiary, var(--fallback-muted)) 55%, transparent);
 }
 @supports selector(::-webkit-scrollbar) {
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker)::-webkit-scrollbar { width: 8px; height: 8px; }
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker)::-webkit-scrollbar-track,
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker)::-webkit-scrollbar-corner { background: transparent; }
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background-color: var(--scrollbar-thumb); background-clip: padding-box; transition: background-color .16s ease; }
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker)::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar { width: 8px; height: 8px; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-track,
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-corner { background: transparent; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background-color: var(--scrollbar-thumb); background-clip: padding-box; transition: background-color .16s ease; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 }
 @supports not selector(::-webkit-scrollbar) {
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker) { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list) { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker)::-webkit-scrollbar-thumb { transition: none; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-thumb { transition: none; }
 }

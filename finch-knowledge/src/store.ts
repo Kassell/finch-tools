@@ -13,6 +13,7 @@ import { resolveDocumentStatus, type CoverageState, type SourceState, type Docum
 
 import { directoryKey, indexedDirectories, insideDirectory, TAG_COLORS } from './directories.js';
 import { IndexSkipError } from './indexing-result.js';
+import { remoteIndexRoot } from './index-location.js';
 
 export const ACCEPTED = ['.md', '.markdown', '.txt', '.doc', '.docx', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff'];
 export const DEFAULT_TAG = 'default';
@@ -152,6 +153,10 @@ export interface LibraryOptions {
   directoryRoot: string;
   /** Local cache for downloadable engines; kept off network volumes. Defaults to the library directory. */
   cachePath?: string;
+  /** Remote sources use one validated, source-specific index below Finch's local storage. */
+  remoteIndexKey?: string;
+  /** Reject an unmounted or remapped source before indexing or reconciliation. */
+  sourceGuard?: () => Promise<void>;
   progress?: (message: string) => void;
   onStatusChange?: (path: string, phase: 'processing' | 'settled') => void;
   /** Runs before an import takes the library lock, so a missing engine is reported, not awaited. */
@@ -170,16 +175,25 @@ export class KnowledgeStore {
   private readonly metadataCache = new Map<string, { expires: number; size_bytes: number | null; modified_at: number | null; file_type: string }>();
   private readonly onStatusChange?: LibraryOptions['onStatusChange'];
   readonly directoryRoot: string;
+  readonly indexStorage: 'source' | 'local';
   private readonly cachePath: string;
   private readonly progress?: (message: string) => void;
   private readonly requireEngine?: (extension: string) => Promise<void>;
+  private readonly sourceGuard?: () => Promise<void>;
+  async assertSourceAvailable(): Promise<void> { await this.sourceGuard?.(); }
   constructor(readonly root: string, options: LibraryOptions) {
-    if (!options?.directoryRoot || resolve(root) !== join(resolve(options.directoryRoot), '.knowledge')) throw new Error('Only source-directory indexes are supported.');
+    if (!options?.directoryRoot || (options.remoteIndexKey && !options.cachePath)) throw new Error('Only source-directory indexes are supported.');
+    const expected = options.remoteIndexKey && options.cachePath
+      ? remoteIndexRoot(resolve(options.cachePath), options.remoteIndexKey)
+      : join(resolve(options.directoryRoot), '.knowledge');
+    if (resolve(root) !== expected) throw new Error('Only source-directory indexes are supported.');
+    this.indexStorage = options.remoteIndexKey ? 'local' : 'source';
     this.directoryRoot = options.directoryRoot;
     this.cachePath = options.cachePath ?? root;
     this.progress = options.progress;
     this.onStatusChange = options.onStatusChange;
     this.requireEngine = options.requireEngine;
+    this.sourceGuard = options.sourceGuard;
     mkdirSync(root, { recursive: true });
     const existing = existsSync(join(root, 'catalog.sqlite'));
     this.catalog = new DatabaseSync(join(root, 'catalog.sqlite'));
@@ -613,6 +627,7 @@ export class KnowledgeStore {
   }
 
   private async trackedDirectoryFile(path: string, displayName: string, tagId: string) {
+    await this.assertSourceAvailable();
     const { assertSourcePath } = await import('./source-directory.js');
     path = await assertSourcePath(this.directoryRoot, path);
     this.processing.set(path, (this.processing.get(path) ?? 0) + 1);

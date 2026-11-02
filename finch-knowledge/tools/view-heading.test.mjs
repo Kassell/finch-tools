@@ -13,7 +13,7 @@ test('the restored localized headline stays fixed when the source directory chan
     const { ui } = JSON.parse(await readFile(new URL(`../i18n/${locale}.json`, import.meta.url), 'utf8'));
     const elements = new Map();
     const element = id => {
-      if (!elements.has(id)) elements.set(id, { attrs: {}, classList: { toggle() {} }, setAttribute(key, value) { this.attrs[key] = value; } });
+      if (!elements.has(id)) elements.set(id, { attrs: {}, replaceChildren() {}, classList: { toggle() {} }, setAttribute(key, value) { this.attrs[key] = value; } });
       return elements.get(id);
     };
     const context = createContext({ window: { finch: {} }, document: { getElementById: element }, localized: ui });

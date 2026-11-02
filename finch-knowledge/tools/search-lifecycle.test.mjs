@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transform } from 'esbuild';
+import { isLibraryScoped } from '../dist/index.js';
 const source = (await readFile(new URL('../src/view.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const declarations = source.slice(0, source.indexOf('\nmountStaticIcons();')).replace(/^import .*\n/gm, '');
 const start = source.indexOf('if (bridge) {\n  bridge.onMessage');
@@ -24,7 +25,7 @@ function fixture() {
   const element = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   element('search-dialog').append(element('query'), element('matches'));
   let receive, sequence = 0;
-  const context = createContext({ Node: Element, Element, document: { getElementById: element, createElement: () => new Element() },
+  const context = createContext({ isLibraryScoped, Node: Element, Element, document: { getElementById: element, createElement: () => new Element() },
     clearTimeout: id => timers.delete(id), window: { finch: { onMessage(fn) { receive = fn; }, postMessage: message => requests.push(message) },
       setTimeout(fn) { const id = ++sequence; timers.set(id, fn); return id; }, addEventListener(name, fn) { windowEvents[name] = fn; } },
   });

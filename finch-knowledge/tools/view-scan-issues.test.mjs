@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transform } from 'esbuild';
+import { isLibraryScoped } from '../dist/index.js';
 
 const source = (await readFile(new URL('../src/view.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const declarations = source.slice(0, source.indexOf('\nmountStaticIcons();')).replace(/^import .*\r?\n/gm, '');
@@ -28,14 +29,14 @@ function fixture(locale = 'en-US') {
   const elements = new Map(), toasts = [], events = {}, windowEvents = {};
   const byId = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   byId('scan-issues').hidden = true; byId('scan-issues-button').hidden = true;
-  const context = createContext({
+  const context = createContext({ isLibraryScoped,
     window: { finch: { onMessage(callback) { receive = callback; }, postMessage() {} }, scrollX: 0, scrollY: 0, innerWidth: 1200, innerHeight: 800, addEventListener(name, fn) { windowEvents[name] = fn; } },
     clearTimeout() {}, document: { getElementById: byId, createElement: element, addEventListener(name, fn) { events[name] = fn; } }, toasts,
   });
   runInContext(code, context);
   context.ui = copies[locale];
   const run = script => runInContext(script, context);
-  run("copy = ui; libraryPath = '/library'; renderDocs = updateLibrary = renderEnvironment = renderEnvironmentMenu = renderOnboardLibrary = renderActivity = setMenu = closeRowMenu = () => {}; toast = (...args) => toasts.push(args);");
+  run("copy = ui; libraryPath = '/library'; renderDirectories = renderTags = renderDocs = updateLibrary = renderEnvironment = renderEnvironmentMenu = renderOnboardLibrary = renderActivity = setMenu = closeRowMenu = () => {}; toast = (...args) => toasts.push(args);");
   return { run, receive, byId, toasts, events, windowEvents };
 }
 const outcome = { updated: [], removed: [], unchanged: 2, unreachable: [], failed: [] };

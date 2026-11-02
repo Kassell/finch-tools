@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transform } from 'esbuild';
+import { isLibraryScoped } from '../dist/index.js';
 
 const view = (await readFile(new URL('../src/view.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const declarations = view.slice(0, view.indexOf('\nmountStaticIcons();')).replace(/^import .*\n/gm, '');
@@ -18,7 +19,7 @@ function fixture() {
   const elements = new Map();
   const element = id => { if (!elements.has(id)) elements.set(id, new El()); return elements.get(id); };
   const sent = [];
-  const context = createContext({ window: { finch: { postMessage: message => sent.push(message) } }, document: { getElementById: element, querySelector: () => null }, El });
+  const context = createContext({ isLibraryScoped, window: { finch: { postMessage: message => sent.push(message) } }, document: { getElementById: element, querySelector: () => null }, El });
   runInContext(code, context);
   runInContext(`
     node = () => new El(); svg = () => new El(); environmentIcon = () => null;

@@ -21,6 +21,20 @@ The setup page shows three local engines and your source directory together. Sea
 
 Each time a directory is opened, Knowledge Base checks it in the background: new files are indexed, changed files are refreshed, and confirmed missing files are removed from the index. Files that cannot be read, or whose parent directory is unavailable, keep their previous indexes and are reported. Hidden files, symbolic links and `.knowledge/` are skipped.
 
+## Switch knowledge bases
+
+Open the bottom-left library menu and choose **Add knowledge base…** to select another source directory. Each directory stays in the list, labelled with its folder name and full path. Click a library to switch; the current library is checked, and the list and selection are remembered after restart. Your previous single-library selection is kept automatically.
+
+Browsing, tags, indexing and both in-app and assistant searches use **only the currently selected library**. There is no cross-library search. Switching clears the previous library’s filters and search results without copying files or merging indexes. Each local directory retains its own `.knowledge/` and tags; mounted network directories keep independent indexes and tags on this computer. If a drive is unavailable or a switch fails, the current usable library remains selected and the unavailable entry stays registered for a later retry.
+
+### Mounted SMB/NAS and network folders
+
+Mount or map the share in your operating system first, then add its folder through the same library picker. Windows UNC paths and mapped network drives, macOS SMB/NFS mounts, and Linux CIFS/NFS mounts are detected automatically. A local disk or USB drive continues using its existing `.knowledge/`.
+
+For a network source, **no index or tags are written to the share**. Each selected remote directory has a separate index under Finch’s local mini-program data (`remote/<opaque-id>/`). Reopening the same share subdirectory reuses its index; another share or subdirectory gets a different one. Reusing a mapped drive letter for another share does not reuse the previous share’s index. The footer explains when an index is local, and the assistant’s library information reports its location.
+
+The share must already be mounted and readable; this tool does not log in, mount shares, or store credentials. An interrupted scan never treats an unavailable root as an empty library. Reconnect and retry to continue; this is not a file backup or a guaranteed offline browsing mode. Existing `.knowledge/` data on a network share is left untouched, not opened, copied or automatically migrated: the first local scan rebuilds its index, and tags on the old share are not imported.
+
 ## Use your documents
 
 - Manage source files in your system file manager. Use **Open source folder** to get there, then **Scan and update** to reconcile indexes.
@@ -42,7 +56,7 @@ Folders get the remaining sidebar space. Tags retain a 160 px minimum area when 
 
 Scan completion appears briefly at the top center and dismisses automatically, never at the bottom. The warning button beside **Scan and update** opens individual notices without taking space in the document list. Rows show their status at the far right; hovering or focusing replaces it with file actions. Unassigned files have no placeholder badge.
 
-The top toolbar is the single home for scanning and opening the source folder. The footer menu only changes the source directory or checks the runtime. Empty lists use a directory-aware guide; empty tag scopes and active scans have separate messages, without duplicate action buttons.
+The top toolbar is the single home for scanning and opening the source folder. The footer menu only lists knowledge bases, adds or switches libraries, and checks the runtime. Empty lists use a directory-aware guide; empty tag scopes and active scans have separate messages, without duplicate action buttons.
 
 ## File details and search
 
@@ -95,6 +109,20 @@ npx @finchtoys/minitools add finch-knowledge
 
 每次打开目录，会在后台增量核对：新增文件入索引，修改文件更新索引，确认删除的文件清理索引。文件暂不可读或父目录不可用时保留旧索引并提示。跳过隐藏文件、符号链接和 `.knowledge/`。
 
+## 切换知识库
+
+打开左下角知识库菜单，点 **添加知识库…**，通过系统选择器选择另一个资料目录。每个目录会保留在列表中，显示文件夹名及完整路径；点击即可切换，当前库带勾选标记，列表与当前选择在重启后保留。旧版已选目录会自动加入列表。
+
+浏览、标签、索引、页面搜索与 AI 检索都**仅针对当前选中的知识库**，不做跨库检索。切换会清除上一库的筛选和搜索结果，不复制文件、不合并索引；每个本地目录继续使用自己的 `.knowledge/` 和标签；网络挂载目录则使用各自独立的本机索引和标签。磁盘暂不可用或切换失败时，保留当前可用知识库，离线目录仍留在列表中以便稍后重试。
+
+### 已挂载的 SMB/NAS 与网络目录
+
+先在操作系统中挂载或映射共享，再通过同一个知识库选择器添加目录。自动识别 Windows UNC 路径与映射网络盘、macOS SMB/NFS 挂载，以及 Linux CIFS/NFS 挂载；本地硬盘和 USB 外接盘继续使用原来的 `.knowledge/`。
+
+网络目录**仅读取，不在共享中写索引或标签**。每个选中的远端目录分别使用 Finch 本机小程序数据目录中的 `remote/<独立标识>/` 索引；重新打开同一共享子目录会复用，换共享或子目录则隔离。同一网络盘符改为映射另一个共享时，不会误用上一共享的索引。左下菜单会说明索引保存在本机，AI 的知识库信息也会显示实际索引位置。
+
+需要共享已挂载且可读；小程序不负责登录、挂载或保存凭据。扫描时根目录断连不会按空库清理索引，恢复连接后可重试；这不是原文件备份，也不承诺完整离线浏览。远端已有的 `.knowledge/` 原样保留，不打开、不复制、不自动迁移；首次本机扫描重新建立索引，旧远端标签不会自动导入。
+
 ## 使用资料
 
 - 在系统文件管理器中管理原文件；顶部 **打开资料目录** 可直达原目录，完成后点 **扫描更新**。
@@ -116,7 +144,7 @@ npx @finchtoys/minitools add finch-knowledge
 
 扫描完成统一在顶部居中短暂提示，几秒后自动消失，不在底部显示；**扫描更新** 旁的三角提示按钮可查看逐项原因，不占资料列表空间。文件状态靠最右显示，悬停或键盘聚焦时由操作按钮替换；未打标签文件不显示占位标签。
 
-顶部是扫描更新与打开资料目录的唯一主操作区；左下菜单仅保留目录切换与运行环境检查。空库显示目录与操作指引，无资料的标签、加载和扫描中分别提示，不再重复放置操作按钮。
+顶部是扫描更新与打开资料目录的唯一主操作区；左下菜单仅保留知识库列表、添加、切换与运行环境检查。空库显示目录与操作指引，无资料的标签、加载和扫描中分别提示，不再重复放置操作按钮。
 
 ## 文件信息与搜索
 

@@ -43,8 +43,10 @@
           </div>
           <div class="activity" id="activity" hidden><span class="activity-fill" id="activity-fill"></span></div>
           <div id="library-menu" class="menu" role="menu" hidden>
-            <p class="menu-caption" id="library-note">Choose a source directory or check the local reading engines.</p>
-            <button type="button" id="library-location" class="menu-item" role="menuitem"><span data-icon="folder-open"></span><span id="library-location-label">Choose location…</span></button>
+            <p class="menu-caption" id="library-note">Each knowledge base keeps its own index and tags. Search uses only the current one.</p>
+            <div id="library-list" class="library-list" role="group" aria-label="Knowledge bases"></div>
+            <div class="menu-separator" role="separator"></div>
+            <button type="button" id="library-location" class="menu-item" role="menuitem"><span data-icon="folder-plus"></span><span id="library-location-label">Add knowledge base…</span></button>
             <div class="menu-separator" role="separator"></div>
             <button type="button" id="library-environment" class="menu-item" role="menuitem"><span data-icon="refresh-cw"></span><span id="library-environment-label">Check runtime</span><span class="menu-detail" id="library-environment-detail"></span></button>
           </div>

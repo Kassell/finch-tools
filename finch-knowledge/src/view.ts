@@ -9,6 +9,8 @@ import { createSortMenu, type SortOrder } from './sort-menu.js';
 import { wireWorkspaceResize } from './workspace-resize.js';
 import { createColorSurface } from './color-picker.js';
 import { wireScrollbars } from './scrollbars.js';
+import { isLibraryScoped } from './library-scope.js';
+import type { LibraryRecord } from './libraries.js';
 
 type Bridge = finch.WebviewBridgeApi;
 declare global { interface Window { finch: Bridge } }
@@ -16,10 +18,10 @@ interface Document { size_bytes?: number | null; modified_at?: number | null; fi
 interface Tag { id: string; name: string; count: number; color?: string }
 interface IndexedDirectory { path: string; parent: string | null; name: string; count: number }
 interface Match { document_id: string; name: string; path: string; tag_id: string; chunk: number; text: string; matched?: string[] }
-interface LibraryInfo { entered?: boolean; selected?: boolean; root: string; isDefault: boolean; documents: number; tags: number; unavailable: string | null }
+interface LibraryInfo { indexStorage?: 'source' | 'local'; indexRoot?: string; version?: number; name?: string; activeId?: string; libraries?: LibraryRecord[]; entered?: boolean; selected?: boolean; root: string; isDefault: boolean; documents: number; tags: number; unavailable: string | null }
 interface EnvironmentStep { id: string; status: 'pending' | 'running' | 'ready' | 'failed'; optional?: boolean; lazy?: boolean; message?: string; percent?: number; detail?: string; error?: string }
 interface EnvironmentState { running: boolean; ready: boolean; usable: boolean; steps: EnvironmentStep[]; startedAt?: number; finishedAt?: number }
-interface Reply { type: string; directories?: IndexedDirectory[]; percent?: number; root?: string; phase?: 'processing' | 'settled'; version?: number; document?: Document; requestId?: string; tags?: Tag[]; tag?: Tag; documents?: Document[]; total?: number; offset?: number; focusId?: string; matches?: Match[]; error?: string; message?: string; unchanged?: number; path?: string; count?: number; missing?: number; library?: LibraryInfo; mode?: string; previousRoot?: string; environment?: EnvironmentState; sessionId?: string; names?: string[]; change?: { kind?: string; documentId?: string; tags?: string[] }; sync?: { updated: string[]; removed: string[]; unchanged: number; unreachable: string[]; failed: Array<{ name: string; reason: string }>; skipped?: Array<{ name: string; reason: string }>; moved?: string[] } }
+interface Reply { type: string; libraryVersion?: number; directories?: IndexedDirectory[]; percent?: number; root?: string; phase?: 'processing' | 'settled'; version?: number; document?: Document; requestId?: string; tags?: Tag[]; tag?: Tag; documents?: Document[]; total?: number; offset?: number; focusId?: string; matches?: Match[]; error?: string; message?: string; unchanged?: number; path?: string; count?: number; missing?: number; library?: LibraryInfo; mode?: string; previousRoot?: string; environment?: EnvironmentState; sessionId?: string; names?: string[]; change?: { kind?: string; documentId?: string; tags?: string[] }; sync?: { updated: string[]; removed: string[]; unchanged: number; unreachable: string[]; failed: Array<{ name: string; reason: string }>; skipped?: Array<{ name: string; reason: string }>; moved?: string[] } }
 type Copy = Record<string, string>;
 const english: Copy = {
   directoriesTitle: 'SOURCE FOLDERS', directoriesHint: 'Indexed folders only; selecting a folder includes its subfolders.', tagColor: 'Tag color',
@@ -74,9 +76,13 @@ const english: Copy = {
   engineNeeded: 'Importing this needs {name}. Its installation just started in the background — drop it again once it is ready.',
   syncNoSources: 'No indexable sources. Place supported files in the directory, then scan again.',
   syncHint: 'Compare SHA-256 hashes: index new or changed files, skip unchanged content, repair missing passages. Clean confirmed missing entries and retain unreadable sources. Skip .knowledge and hidden files.',
-  libraryLocation: 'Choose location…', libraryEnvironment: 'Check runtime',
+  libraryLocation: 'Add knowledge base…', libraryEnvironment: 'Check runtime',
+  librariesTitle: 'Knowledge bases',
+  libraryNoteRemote: 'Remote sources are read only. This knowledge base keeps its own index and tags on this computer.',
+  libraryDoneRemote: 'Opened {path}. Its independent index and tags stay on this computer.',
+  libraryDoneSwitch: 'Switched to {name}. Searches use only this knowledge base.',
   onboardChooseTitle: 'Choose your source directory first',
-  onboardChooseIntro: 'Empty and populated directories are allowed. An existing .knowledge is opened, otherwise it is created. Setup waits for your choice.',
+  onboardChooseIntro: 'Choose an empty or populated directory. Local libraries use .knowledge; mounted network libraries keep independent indexes on this computer.',
   directoryDropHint: 'Place files in the source directory, then scan. Files are never copied or moved.',
   onboardTitle: 'Prepare your knowledge base',
   onboardEnter: 'Enter Knowledge Base',
@@ -85,7 +91,7 @@ const english: Copy = {
   onboardLibraryChosen: 'Custom location',
   onboardLibraryUnavailable: 'Unavailable',
   onboardLibraryAction: 'Choose location…',
-  onboardLibraryHint: 'Pick a folder: a library inside it is opened, an empty folder gets a new one.',
+  onboardLibraryHint: 'Local directories use .knowledge. Mounted network directories keep their indexes on this computer.',
   onboardIntro: 'Search and document engines prepare automatically. OCR loads in the background on the first image. Choose your directory to enter once the required engines are ready.',
   onboardLancedb: 'Vector search (LanceDB)', onboardAnydoc: 'Office & PDF reading (AnyDoc)', onboardOcr: 'Image text recognition (OCR)',
   onboardOnDemand: 'on demand', onboardOcrHint: 'Prepared in the background when the first image is processed; does not block entry.',
@@ -104,7 +110,7 @@ const english: Copy = {
   onboardHelpOpening: 'Opening a chat with the details…',
   libraryLabel: 'Library location', 
   libraryReveal: 'Show the library folder in the file manager',
-  libraryNote: 'Choose a source directory or check the local reading engines.',
+  libraryNote: 'Each knowledge base keeps its own index and tags. Search uses only the current one.',
   libraryDefault: 'Using the default folder inside Finch.',
   libraryUnavailable: 'The saved library folder is unavailable: {path}',
   libraryWorking: 'Working on the library folder…',
@@ -148,6 +154,11 @@ let libraryEntered = false;
 let scanIssues: Array<{ name: string; reason: string; unreachable?: boolean }> = [];
 let scanIssuesCleared = false;
 let libraryPath = '';
+let libraryName = '';
+let libraryIndexStorage: 'source' | 'local' = 'source';
+let libraryVersion = -1;
+let activeLibraryId = '';
+let libraryEntries: LibraryRecord[] = [];
 let libraryDefault = false;
 let libraryUnavailable = '';
 let libraryBusy = false;
@@ -162,7 +173,7 @@ let draggingTag: string | null = null;
 let debounce: number | undefined;
 let searchQuery = '';
 let localeEpoch = 0;
-const pending = new Map<string, { type: string; epoch: number; mode?: 'replace' | 'append' | 'prepend' | 'locate' }>();
+const pending = new Map<string, { type: string; root?: string; version?: number; epoch: number; mode?: 'replace' | 'append' | 'prepend' | 'locate' }>();
 function tr(key: string, values?: Record<string, string | number>): string {
   let value = copy[key] ?? english[key] ?? key;
   for (const [token, replacement] of Object.entries(values ?? {})) value = value.replace(`{${token}}`, String(replacement));
@@ -291,8 +302,10 @@ function mountStaticIcons(): void {
 }
 function request(type: string, payload: Record<string, unknown> = {}, mode?: 'replace' | 'append' | 'prepend' | 'locate'): string {
   const requestId = String(++sequence);
-  pending.set(requestId, { type, mode, epoch: type === 'search' ? searchEpoch : pageEpoch });
-  bridge.postMessage({ type, requestId, ...payload });
+  const root = isLibraryScoped(type) && libraryPath ? libraryPath : undefined;
+  const version = root && libraryVersion >= 0 ? libraryVersion : undefined;
+  pending.set(requestId, { type, mode, root, version, epoch: type === 'search' ? searchEpoch : pageEpoch });
+  bridge.postMessage({ type, requestId, ...(root ? { libraryRoot: root } : {}), ...(version !== undefined ? { libraryVersion: version } : {}), ...payload });
   return requestId;
 }
 function page(offset: number, mode: 'replace' | 'append' | 'prepend' = 'replace'): void {
@@ -647,8 +660,9 @@ function renderTags(): void {
       });
       const remove = icon(Trash2, tr('deleteTag'));
       remove.addEventListener('click', async () => {
+        const root = libraryPath;
         const { confirmed } = await bridge.ui.confirm({ title: tr('tagDeleteTitle'), message: tr('tagDeleteMessage'), variant: 'danger' });
-        if (confirmed) request('tagDelete', { id });
+        if (confirmed && root === libraryPath) request('tagDelete', { id });
       });
       actions.append(rename, remove); row.append(actions);
       wireTagDrag(row, id, choice);
@@ -1383,11 +1397,29 @@ function applyEnvironment(state: EnvironmentState | undefined): void {
     request('environmentInstall');
   }
 }
-function applyLibrary(info: LibraryInfo | undefined): void {
-  if (!info) return;
+function applyLibrary(info: LibraryInfo | undefined): boolean {
+  if (!info || (info.version !== undefined && info.version < libraryVersion)) return false;
+  const newerScope = info.version !== undefined && libraryVersion >= 0 && info.version !== libraryVersion;
+  if (info.version !== undefined) libraryVersion = info.version;
   const nextPath = info.selected === false ? '' : info.root;
-  if (libraryPath !== nextPath) { closeTagColor(); documentStatusVersions.clear(); scanIssuesCleared = false; scanIssues = []; renderScanIssues(); }
+  const changed = libraryPath !== nextPath || newerScope;
   libraryPath = nextPath;
+  libraryName = info.name ?? '';
+  libraryIndexStorage = info.indexStorage ?? 'source';
+  activeLibraryId = info.activeId ?? '';
+  libraryEntries = info.libraries ?? [];
+  if (changed) {
+    setMenu(false); setLibraryBusy(false);
+    closeRowMenu(); closeTagColor(); closeSearch();
+    pageEpoch++; loadingPage = false;
+    creatingTag = false; inlineTagEditing = null; draggingTag = null;
+    selectedTag = null; selectedDirectory = null;
+    directories = []; expandedDirectories.clear(); tags = []; docs = [];
+    total = 0; beforeOffset = 0; nextOffset = 0;
+    documentStatusVersions.clear(); scanIssuesCleared = false; scanIssues = []; renderScanIssues();
+    renderDirectories(); renderTags(); renderDocs();
+    setScanBusy(false);
+  }
   libraryDefault = info.isDefault;
   libraryEntered = info.entered === true;
   libraryUnavailable = info.unavailable ?? '';
@@ -1395,6 +1427,7 @@ function applyLibrary(info: LibraryInfo | undefined): void {
   updateLibrary();
   renderOnboardLibrary();
   if (environment) renderEnvironment(environment);
+  return changed;
 }
 function shortPath(path: string): string {
   const parts = path.split(/[/\\]+/).filter(Boolean);
@@ -1406,18 +1439,47 @@ function updateLibrary(): void {
   byId('heading').textContent = tr('heading');
   byId('heading').setAttribute('title', tr('heading'));
   const path = byId('library-path');
-  path.textContent = short;
+  path.textContent = libraryName || (libraryUnavailable ? shortPath(libraryUnavailable) : short);
   // The row shows only the folder name, so the tooltip carries what it is and the full path.
   const reveal = byId('library-reveal');
-  reveal.setAttribute('title', `${libraryUnavailable ? '⚠ ' : ''}${tr('libraryLabel')}\n${libraryUnavailable ?? libraryPath}`);
-  reveal.setAttribute('aria-label', `${tr('libraryLabel')}: ${libraryUnavailable ?? libraryPath}, ${tr('libraryReveal')}`);
+  reveal.setAttribute('title', `${libraryUnavailable ? '⚠ ' : ''}${tr('libraryLabel')}\n${libraryUnavailable || libraryPath}`);
+  reveal.setAttribute('aria-label', `${tr('libraryLabel')}: ${libraryUnavailable || libraryPath}, ${tr('libraryReveal')}`);
   byId('library-footer').classList.toggle('warning', Boolean(libraryUnavailable));
   const note = byId('library-note');
+  const libraryNote = tr(libraryIndexStorage === 'local' ? 'libraryNoteRemote' : 'libraryNote');
   note.textContent = libraryUnavailable ? `${tr('libraryUnavailable', { path: libraryUnavailable })}
 
-${tr('libraryNote')}` : libraryDefault ? `${tr('libraryDefault')}
+${libraryNote}` : libraryDefault ? `${tr('libraryDefault')}
 
-${tr('libraryNote')}` : tr('libraryNote');
+${libraryNote}` : libraryNote;
+  renderLibraryChoices();
+}
+function renderLibraryChoices(): void {
+  const container = byId('library-list');
+  container.setAttribute('aria-label', tr('librariesTitle'));
+  container.replaceChildren(...libraryEntries.map(entry => {
+    const row = node('div', 'library-entry');
+    row.dataset.libraryId = entry.id;
+    const current = entry.id === activeLibraryId;
+    const choice = node('button', 'menu-item library-choice') as HTMLButtonElement;
+    choice.type = 'button'; choice.disabled = libraryBusy;
+    choice.setAttribute('role', 'menuitemradio'); choice.setAttribute('aria-checked', String(current));
+    choice.title = entry.root;
+    const label = node('span', 'library-entry-label');
+    const detail = node('span', 'library-entry-root', entry.root); detail.dir = 'ltr';
+    label.append(node('span', 'library-entry-name', entry.name), detail);
+    const check = node('span', 'library-entry-check');
+    if (current) check.append(svg(Check));
+    choice.append(check, label);
+    choice.addEventListener('click', () => {
+      if (libraryBusy) return;
+      setMenu(false);
+      if (current) return;
+      setLibraryBusy(true); request('librarySwitch', { id: entry.id });
+    });
+    row.append(choice);
+    return row;
+  }));
 }
 function setMenu(open: boolean): void {
   if (open) closeRowMenu();
@@ -1448,6 +1510,7 @@ function requestScan(): void {
 }
 function setLibraryBusy(busy: boolean): void {
   libraryBusy = busy;
+  renderLibraryChoices();
   for (const id of ['library-location', 'library-reveal', 'library-menu-button', 'open-directory', 'onboard-library-action']) (byId(id) as HTMLButtonElement).disabled = busy;
   if (busy) setMenu(false);
   setScanBusy(scanBusy);
@@ -1575,9 +1638,23 @@ if (bridge) {
   bridge.onMessage((message: unknown) => {
     const data = message as Reply & { locale?: string };
     if (data.type === 'finch:env') { void localeChanged(data.locale ?? 'en-US'); return; }
+    if (!data.library && data.libraryVersion !== undefined && data.libraryVersion < libraryVersion) {
+      if (data.requestId) pending.delete(data.requestId);
+      return;
+    }
     // Detailed backend messages may refine an active scan, but never start the bar.
     if (data.type === 'progress') { noteProgress(data.message ?? ''); return; }
     if (data.type === 'environment') { applyEnvironment(data.environment); return; }
+    if (data.library?.version !== undefined && data.library.version < libraryVersion) {
+      const task = data.requestId ? pending.get(data.requestId) : undefined;
+      if (data.requestId) pending.delete(data.requestId);
+      if (task?.type.startsWith('library')) setLibraryBusy(false);
+      return;
+    }
+    if (data.type === 'libraries') {
+      if (applyLibrary(data.library)) { request('tags'); resetPage(); }
+      return;
+    }
     if (data.type === 'documentStatus') {
       if (data.root !== libraryPath || !data.path) return;
       const version = data.version ?? 0;
@@ -1613,6 +1690,7 @@ if (bridge) {
       return;
     }
     if (data.type === 'changed') {
+      if (data.root && data.root !== libraryPath) return;
       applyDirectories(data.directories);
       if (data.change?.kind === 'tagColor') {
         const scroll = byId('documents-scroll').scrollTop;
@@ -1642,22 +1720,26 @@ if (bridge) {
     const task = data.requestId && pending.get(data.requestId);
     if (!task) return;
     pending.delete(data.requestId!);
+    if (task.root && (task.root !== libraryPath || (task.version !== undefined && task.version !== libraryVersion))) return;
+    if (isLibraryScoped(task.type) && data.root && libraryPath && data.root !== libraryPath) return;
     if (task.type === 'search' && (task.epoch !== searchEpoch || !(byId('search-dialog') as HTMLDialogElement).open)) return;
     if ((task.type === 'page' || task.type === 'locate') && task.epoch !== pageEpoch) return;
     if (data.type === 'error') {
       loadingPage = false;
       byId('list-end').textContent = '';
       if (task.type === 'sync') setScanBusy(false);
-      if (task.type === 'libraryAction' || task.type === 'libraryReveal') setLibraryBusy(false);
+      if (task.type.startsWith('library')) setLibraryBusy(false);
       toast(data.error ?? '', 'error'); return;
     }
     switch (data.type) {
-      case 'tags':
+      case 'tags': {
+        const changed = applyLibrary(data.library);
         applyDirectories(data.directories);
         applyTags(data.tags ?? []);
-        applyLibrary(data.library);
         applyEnvironment(data.environment);
+        if (changed) resetPage();
         break;
+      }
       case 'environmentHelpOpened':
         // The chat opens in front of this page, so the hand-off speaks for itself.
         break;
@@ -1695,16 +1777,11 @@ if (bridge) {
         setLibraryBusy(false); break;
       case 'libraryDone': {
         setLibraryBusy(false);
-        selectedTag = null;
-        selectedDirectory = null;
-        directories = []; expandedDirectories.clear();
-        renderDirectories();
-        tags = []; docs = [];
         environmentAutoStarted = false;
         applyLibrary(data.library);
         applyEnvironment(data.environment);
-        const key = data.mode === 'open' ? 'libraryDoneOpen' : 'libraryDoneCreate';
-        toast(tr(key, { path: data.library?.root ?? '' }), 'success');
+        const key = data.library?.indexStorage === 'local' ? 'libraryDoneRemote' : data.mode === 'switch' ? 'libraryDoneSwitch' : data.mode === 'open' ? 'libraryDoneOpen' : 'libraryDoneCreate';
+        toast(tr(key, { path: data.library?.root ?? '', name: data.library?.name ?? data.library?.root ?? '' }), 'success');
         // The listing, counts and tags all belong to the previous directory.
         request('tags');
         resetPage();
@@ -1745,9 +1822,8 @@ if (bridge) {
     toast(tr('onboardHelpOpening'), 'info');
     request('environmentHelp');
   });
-  // One button, one decision — on the setup screen and in the library menu alike: the backend
-  // inspects the chosen folder, opens the library it finds there, or copies the current one into
-  // an empty folder.
+  // Adding registers the chosen directory and opens its own index in place.
+  // Existing libraries remain registered; no files or index data are copied.
   for (const id of ['onboard-library-action', 'library-location']) {
     byId(id).addEventListener('click', () => {
       if (libraryBusy) return;
@@ -1777,8 +1853,8 @@ if (bridge) {
     if (target && byId('library-menu-button').contains(target)) return;
     setMenu(false);
   });
-  byId('library-menu').addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { setMenu(false); byId('library-menu-button').focus(); }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && menuOpen()) { event.preventDefault(); setMenu(false); byId('library-menu-button').focus(); }
   });
   for (const id of ['library-reveal', 'open-directory']) byId(id).addEventListener('click', () => {
     if (libraryBusy) return;

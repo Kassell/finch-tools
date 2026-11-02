@@ -2,6 +2,7 @@ import { lstat, mkdir, readdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { ACCEPTED, DEFAULT_TAG, KnowledgeStore, MAX_FILE_BYTES } from './store.js';
 import { IndexSkipError, type IndexSkipReason } from './indexing-result.js';
+import { inspectSourceFilesystem, remoteIndexKey, remoteIndexRoot, type SourceFilesystem } from './index-location.js';
 
 export const INDEX_DIRECTORY = '.knowledge';
 export interface ScanOutcome {
@@ -29,12 +30,26 @@ export async function assertSourcePath(root: string, input: string): Promise<str
 }
 
 /** Existing content and empty directories are both valid; no source file is copied or moved. */
-export async function openSourceDirectory(input: string, cachePath: string, options: { requireEngine?: (extension: string) => Promise<void>; progress?: (message: string) => void; onStatusChange?: (path: string, phase: 'processing' | 'settled') => void } = {}): Promise<KnowledgeStore> {
+export async function openSourceDirectory(input: string, cachePath: string, options: { requireEngine?: (extension: string) => Promise<void>; progress?: (message: string) => void; onStatusChange?: (path: string, phase: 'processing' | 'settled') => void; sourceFilesystem?: (root: string) => Promise<SourceFilesystem> } = {}): Promise<KnowledgeStore> {
   if (!isAbsolute(input)) throw new Error('Choose an absolute library directory.');
   const root = await realpath(input);
   if (!(await stat(root)).isDirectory()) throw new Error('Choose a directory, not a file.');
   if (basename(root) === INDEX_DIRECTORY) throw new Error('Select the source directory, not .knowledge itself.');
-  const index = join(root, INDEX_DIRECTORY);
+  const filesystem = await (options.sourceFilesystem ?? inspectSourceFilesystem)(root);
+  let index = join(root, INDEX_DIRECTORY);
+  let indexKey: string | undefined;
+  let engineCache = cachePath;
+  if (filesystem.network) {
+    const cache = await realpath(cachePath);
+    engineCache = cache;
+    if (inside(root, cache) || (await inspectSourceFilesystem(cache)).network) throw new Error('Network libraries require a local Finch cache directory.');
+    indexKey = remoteIndexKey(filesystem.identity);
+    index = remoteIndexRoot(cache, indexKey);
+    for (const parent of [join(cache, 'remote')]) {
+      const info = await lstat(parent).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+      if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error('Knowledge index data must not be a symbolic link.');
+    }
+  }
   const entry = await lstat(index).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
   if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) throw new Error('.knowledge must be a regular directory.');
   await mkdir(index, { recursive: true });
@@ -42,7 +57,11 @@ export async function openSourceDirectory(input: string, cachePath: string, opti
     const data = await lstat(join(index, name)).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
     if (data?.isSymbolicLink()) throw new Error('Knowledge index data must not be a symbolic link.');
   }
-  return new KnowledgeStore(index, { ...options, cachePath, directoryRoot: root });
+  const sourceGuard = filesystem.network ? async () => {
+    const current = await (options.sourceFilesystem ?? inspectSourceFilesystem)(root);
+    if (!current.network || current.identity !== filesystem.identity) throw new Error('The network source is disconnected or mapped to a different share. Reconnect the original share and retry.');
+  } : undefined;
+  return new KnowledgeStore(index, { ...options, cachePath: engineCache, directoryRoot: root, remoteIndexKey: indexKey, sourceGuard });
 }
 
 /** Incremental recursive reconciliation. Failed reads never become deletions. */
@@ -50,6 +69,8 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
   const root = store.directoryRoot;
   if (!root) throw new Error('No source directory selected.');
   const outcome: ScanOutcome = { updated: [], removed: [], unchanged: 0, unreachable: [], failed: [], skipped: [], moved: [] };
+  // A still-existing local mountpoint is not evidence that its network share is connected.
+  await store.assertSourceAvailable();
   // A root that went offline or changed mounts must not wipe the catalogue.
   const rootInfo = await stat(root);
   const documents = await store.list();
@@ -121,6 +142,7 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
       else outcome.failed.push({ name, reason: error instanceof Error ? error.message : String(error) });
     }
   }
+  await store.assertSourceAvailable();
   for (const doc of missing.values()) {
     if (signal?.aborted) return outcome;
     const presence = await sourcePresence(doc.path);
