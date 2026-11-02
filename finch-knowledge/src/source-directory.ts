@@ -11,6 +11,9 @@ export interface ScanOutcome {
   skipped: Array<{ name: string; reason: IndexSkipReason }>;
   moved: string[];
 }
+// Windows paths are case-insensitive even when catalogue and enumeration spellings differ.
+const pathKey = (path: string) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
+const ignoredSourceDirectory = (name: string) => ['$recycle.bin', 'system volume information'].includes(name.toLowerCase());
 const inside = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
@@ -76,6 +79,7 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
   const documents = await store.list();
   const files: string[] = [];
   const seen = new Set<string>();
+  const unsupported = new Set<string>();
   const blocked: string[] = [];
   const inventoried = new Set<string>();
   async function walk(directory: string): Promise<void> {
@@ -83,23 +87,30 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); }
     catch { blocked.push(directory); outcome.unreachable.push(relative(root!, directory) || root!); return; }
-    inventoried.add(directory);
+    inventoried.add(pathKey(directory));
     for (const entry of entries) {
       if (signal?.aborted) return;
       const path = join(directory, entry.name);
       if (entry.name === INDEX_DIRECTORY || entry.name.startsWith('.')) continue;
+      if (entry.isDirectory() && ignoredSourceDirectory(entry.name)) continue;
       if (entry.isSymbolicLink()) { blocked.push(path); continue; }
       if (entry.isDirectory()) await walk(path);
       else if (entry.isFile()) {
-        seen.add(path);
-        if (ACCEPTED.includes(extname(path).toLowerCase())) files.push(path);
+        if (ACCEPTED.includes(extname(path).toLowerCase())) { seen.add(pathKey(path)); files.push(path); }
+        else unsupported.add(pathKey(path));
       }
     }
   }
   await walk(root);
-  async function sourcePresence(path: string): Promise<'present' | 'missing' | 'unavailable'> {
+  async function sourcePresence(path: string): Promise<'present' | 'missing' | 'unsupported' | 'unavailable'> {
+    if (!inside(root, path)) return 'unavailable';
+    if (relative(root, path).split(sep).slice(0, -1).some(ignoredSourceDirectory)) return 'unsupported';
     if (blocked.some(directory => inside(directory, path))) return 'unavailable';
-    try { await lstat(path); return 'present'; }
+    try {
+      const info = await lstat(path);
+      if (info.isFile() && unsupported.has(pathKey(path))) return 'unsupported';
+      return 'present';
+    }
     catch (error) { if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'unavailable'; }
     const currentRoot = await stat(root).catch(() => null);
     if (!currentRoot?.isDirectory() || currentRoot.dev !== rootInfo.dev || currentRoot.ino !== rootInfo.ino) return 'unavailable';
@@ -113,7 +124,7 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
         throw error;
       }).catch(() => undefined);
       if (info === undefined || info?.isSymbolicLink()) return 'unavailable';
-      if (info?.isDirectory()) return inventoried.has(parent) ? 'missing' : 'unavailable';
+      if (info?.isDirectory()) return inventoried.has(pathKey(parent)) ? 'missing' : 'unavailable';
       if (parent === root) break;
       parent = dirname(parent);
     }
@@ -122,9 +133,9 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
   const missing = new Map<string, (typeof documents)[number]>();
   for (const doc of documents) {
     if (signal?.aborted) return outcome;
-    if (seen.has(doc.path)) continue;
+    if (seen.has(pathKey(doc.path))) continue;
     const presence = await sourcePresence(doc.path);
-    if (presence === 'missing') missing.set(doc.id, doc);
+    if (presence === 'missing' || presence === 'unsupported') missing.set(doc.id, doc);
     else if (presence === 'unavailable') outcome.unreachable.push(relative(root, doc.path));
   }
   for (const [index, path] of files.entries()) {
@@ -143,11 +154,16 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
     }
   }
   await store.assertSourceAvailable();
+  const finalRoot = await stat(root).catch(() => null);
+  if (!finalRoot?.isDirectory() || finalRoot.dev !== rootInfo.dev || finalRoot.ino !== rootInfo.ino) {
+    outcome.unreachable.push(root);
+    return outcome;
+  }
   for (const doc of missing.values()) {
     if (signal?.aborted) return outcome;
     const presence = await sourcePresence(doc.path);
     const current = await store.document(doc.id);
-    if (presence === 'missing' && current?.path === doc.path) {
+    if ((presence === 'missing' || presence === 'unsupported') && current?.path === doc.path) {
       await store.remove(doc.id);
       outcome.removed.push(relative(root, doc.path));
     } else if (presence === 'unavailable') outcome.unreachable.push(relative(root, doc.path));
