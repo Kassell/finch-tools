@@ -16,7 +16,7 @@ function fixture(kind = 'row') {
     addEventListener:(name,fn) => { events[name] = fn; },
   };
   const context = createContext({ document:doc,window:{addEventListener:(name,fn) => { windows[name] = fn; }},
-    closeRowMenu:() => closed.push('row'),closeTagColor:() => closed.push('color'),closeScanIssues:() => closed.push('issues'),setMenu:() => closed.push('library'),
+    closeRowMenu:() => closed.push('row'),closeTagColor:() => closed.push('color'),setMenu:() => closed.push('library'),
   });
   runInContext(code + '\nwireWindowActivity();',context);
   return {classes,events,windows,closed,doc,get blurred(){return blurred;},setFocused:value => { focused=value; }};
@@ -26,7 +26,7 @@ test('window blur clears transient row/button focus and closes menus', () => {
   for (const kind of ['row','button']) {
     const f=fixture(kind); f.windows.blur();
     assert.ok(f.classes.has('window-inactive')); assert.ok(f.classes.has('pointer-quiet'));
-    assert.equal(f.blurred,1); assert.deepEqual(f.closed,['row','color','issues','library']);
+    assert.equal(f.blurred,1); assert.deepEqual(f.closed,['row','color','library']);
   }
 });
 test('switching applications keeps text drafts focused and untouched', () => {
@@ -38,6 +38,15 @@ test('returning focus does not replay hover until fresh pointer activity', () =>
   f.setFocused(false); f.events.pointermove(); assert.ok(f.classes.has('pointer-quiet'));
   f.setFocused(true); f.events.pointermove(); assert.equal(f.classes.has('pointer-quiet'),false);
 });
+test('fresh pointer input reconciles a missed focus event without reviving inactive hover', () => {
+  const f = fixture(); f.windows.blur();
+  f.setFocused(false); f.events.pointermove();
+  assert.ok(f.classes.has('window-inactive')); assert.ok(f.classes.has('pointer-quiet'));
+  f.setFocused(true); f.events.pointermove();
+  assert.equal(f.classes.has('window-inactive'), false);
+  assert.equal(f.classes.has('pointer-quiet'), false);
+});
+
 test('hidden/visible reconciliation also handles a view returning without a focus event', () => {
   const f=fixture(); f.doc.hidden=true; f.events.visibilitychange(); assert.ok(f.classes.has('window-inactive'));
   f.doc.hidden=false; f.events.visibilitychange(); assert.equal(f.classes.has('window-inactive'),false);

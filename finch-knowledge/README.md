@@ -10,6 +10,8 @@ npx @finchtoys/minitools add finch-knowledge
 
 Enable **Knowledge Base** in Finch’s Toolcase, then open it from the sidebar.
 
+For a local offline installer, run `npm run pack:fapp` from this package directory (Node.js required). It builds the runtime files and creates `../finch-knowledge-<version>-fixed.fapp` without replacing an existing file. ZIP entries always use `/`, including on Windows. Double-click the package or drag it into Finch’s main window, confirm installation, then review permissions and enable it in Toolcase.
+
 ## Set up your library
 
 The setup page shows three local engines and your source directory together. Search and document engines prepare automatically; choose a directory with the system folder picker while they run. Once these required engines are ready and a directory is selected, click **Enter Knowledge Base**. OCR is prepared silently in the background on the first image and does not block entry; that image continues automatically after preparation. Progress and failures remain visible. Empty and populated directories are both accepted; no source index is created before your choice.
@@ -44,17 +46,17 @@ The share must already be mounted and readable; this tool does not log in, mount
 - Search a tag with the magnifier, or use the book button in chat to draft a question for your assistant.
 - Ask the assistant to index a new file or scan the directory after edits. Tool paths are relative to the selected knowledge directory, not the chat’s working directory.
 
-The directory is the source of truth. Scanning follows moved folders, removes confirmed obsolete paths, and repairs duplicate old/new mappings. Uniquely identifiable moved files keep their document IDs and tags. Unreadable locations remain indexed until absence can be confirmed. Empty files and sources without searchable text are listed as skips, separately from real processing failures. Original files are never changed.
+The directory is the source of truth. Scanning follows moved folders, removes confirmed obsolete paths, and repairs duplicate old/new mappings. Uniquely identifiable moved files keep their document IDs and tags. Unreadable locations remain indexed until absence can be confirmed. Empty files and sources without searchable text are skipped silently. Original files are never changed.
 
 Drag the boundary between the sidebar and document list to resize the sidebar between **220 and 420 px**. The two panes have a compact **8 px** gap; the resize guide disappears immediately after release, even when the pointer stays over it. Your width is remembered; double-click resets it, and arrow keys also resize. Smaller windows tighten the upper limit to preserve room for documents; narrow views stack vertically.
 
 New and renamed tags use a padded, rounded input row with a neutral fill, not an isolated underline. Opening a system folder clears temporary row highlights and actions when Finch loses focus; returning does not replay stale hover, and editing drafts are preserved.
 
-Opening the library triggers an automatic scan only when the directory has not been scanned within the last **30 minutes**. This interval is remembered per directory across reloads/restarts. **Scan and update** and assistant-requested scans remain available at any time. Use **Clear notices** in the scan popup to dismiss the current report and its triangle; this does not remove indexes or diagnostic records.
+Opening the library triggers an automatic scan only when the directory has not been scanned within the last **30 minutes**. This interval is remembered per directory across reloads/restarts. **Scan and update** and assistant-requested scans remain available at any time. Completed scans show only **Scan finished**; there is no warning triangle or per-file notice popup.
 
 Folders get the remaining sidebar space. Tags retain a 160 px minimum area when space permits, reduced in short sidebars, and grow with their content up to a capped height; each list scrolls independently. The empty-tag guide is centered in that area rather than squeezed against the footer. Scrollbars appear only on hover or while scrolling, then fade after scrolling stops. Sidebar scrollbars use the existing right padding rather than narrowing tag/folder rows; file columns stay aligned.
 
-Scan completion appears briefly at the top center and dismisses automatically, never at the bottom. The warning button beside **Scan and update** opens individual notices without taking space in the document list. Rows show their status at the far right; hovering or focusing replaces it with file actions. Unassigned files have no placeholder badge.
+Scan completion appears briefly at the top center and dismisses automatically, never at the bottom. System directories such as `$RECYCLE.BIN` and `System Volume Information` are silently skipped. Rows show their status at the far right; hovering or focusing replaces it with file actions. Unassigned files have no placeholder badge.
 
 The top toolbar is the single home for scanning and opening the source folder. The footer menu only lists knowledge bases, adds or switches libraries, and checks the runtime. Empty lists use a directory-aware guide; empty tag scopes and active scans have separate messages, without duplicate action buttons.
 
@@ -64,7 +66,7 @@ Click a tag badge in a file row to switch directly to that tag, just like the si
 
 The list shows **Name, Date modified, Type, Size and Index status**. Modification dates and sizes come from the original files, not their indexes. Click a column heading again to reverse sorting across the current folder/tag, including later pages. Unavailable attributes show a dash. Narrow panes hide secondary columns; hover a row for its complete details.
 
-An empty search shows only a short prompt. Results appear after typing; no matches get a separate suggestion to try other keywords. Scan notices open from the triangle to the left of **Scan and update**.
+An empty search shows only a short prompt. Results appear after typing; no matches get a separate suggestion to try other keywords.
 
 ## Document states
 
@@ -96,6 +98,8 @@ npx @finchtoys/minitools add finch-knowledge
 
 在 Finch 工具箱启用 **知识库**，从侧栏打开。
 
+需要本地离线安装包时，在本包目录运行 `npm run pack:fapp`（需要 Node.js）。命令会先构建运行文件，再生成 `../finch-knowledge-<版本>-fixed.fapp`，不会覆盖已有文件。包内路径在 Windows 上也统一使用 `/`。双击安装包或拖入 Finch 主窗口，确认安装后，在工具箱审查权限并启用。
+
 ## 一次完成准备
 
 初始化页同时显示三个引擎和资料目录。检索与文档引擎自动准备，期间也能通过**系统文件夹选择器**选择资料目录，不需要手输路径。OCR 标记为按需加载，首次处理图片时才在后台准备，准备后自动继续当前识别，不弹窗口；进度与失败原因仍可查看。
@@ -107,7 +111,7 @@ npx @finchtoys/minitools add finch-knowledge
 - 文件保持原位；切换目录不会把旧库复制进新目录。
 - 引擎下载缓存留在 Finch 本机数据目录，不放进资料目录。
 
-每次打开目录，会在后台增量核对：新增文件入索引，修改文件更新索引，确认删除的文件清理索引。文件暂不可读或父目录不可用时保留旧索引并提示。跳过隐藏文件、符号链接和 `.knowledge/`。
+每次打开目录，会在后台增量核对：新增文件入索引，修改文件更新索引，确认删除的文件清理索引。文件暂不可读或父目录不可用时保留旧索引，避免误删。跳过隐藏文件、符号链接和 `.knowledge/`。
 
 ## 切换知识库
 
@@ -132,17 +136,17 @@ npx @finchtoys/minitools add finch-knowledge
 - 用放大镜检索当前标签，或用对话工具栏的书本按钮编辑提问模板。
 - 可以请 AI 索引新文件，或在编辑后扫描目录。工具的相对路径以知识库目录为根，不以当前聊天工作目录为根。
 
-目录实际内容是唯一依据。扫描会跟随目录移动，清理确认消失的旧路径，并修复新旧路径重复计数；可唯一识别的移动保留索引标识和标签。无法访问时保留映射，待可确认后再清理。空文件、图片未识别到文字、没有可检索文字会分别提示为跳过，不计为处理失败；原文件始终不变。
+目录实际内容是唯一依据。扫描会跟随目录移动，清理确认消失的旧路径，并修复新旧路径重复计数；可唯一识别的移动保留索引标识和标签。无法访问时保留映射，待可确认后再清理。空文件、图片未识别到文字、没有可检索文字会静默跳过；原文件始终不变。
 
 左右栏之间可拖动调整左栏宽度，范围为 **220–420px**，两栏间距为 **8px**，松手后分隔线立即隐藏，即使鼠标仍停在原处。会记住调整结果；双击恢复默认，也可用左右方向键调整。窗口较小时会自动收紧上限，为右侧资料列表保留空间；窄窗口保持上下排列。
 
 新建和重命名标签使用带留白、浅底和完整圆角边框的输入行，不再只有一条下划线。打开系统文件夹导致 Finch 失焦时，临时行高亮和操作状态会清除；切回不会恢复旧悬停，编辑中的文字仍保留。
 
-打开知识库时，同一目录 **30 分钟内不重复自动扫描**，记录在重开或重启后仍有效；手动点 **扫描更新** 或让 AI 主动扫描不受限制。提示气泡里的 **清空提示** 可关闭本次报告并隐藏三角，不删除索引或诊断记录。
+打开知识库时，同一目录 **30 分钟内不重复自动扫描**，记录在重开或重启后仍有效；手动点 **扫描更新** 或让 AI 主动扫描不受限制。扫描结束只提示 **扫描完成**，不再显示三角警告或逐项异常弹层。
 
 目录占用侧栏的主要空间，标签区在空间足够时保留 160px 最小高度，较短侧栏随可用空间收紧，按内容增长并限制最高高度，两个列表独立滚动；没有标签时提示居中，不再挤在底栏上方，空目录也保留简洁引导。滚动条只在悬停或滚动时显示，停止后自动隐藏；侧栏滚动条放入原有右侧留白，不挤压目录、标签和计数，文件信息列也保持对齐。
 
-扫描完成统一在顶部居中短暂提示，几秒后自动消失，不在底部显示；**扫描更新** 旁的三角提示按钮可查看逐项原因，不占资料列表空间。文件状态靠最右显示，悬停或键盘聚焦时由操作按钮替换；未打标签文件不显示占位标签。
+扫描完成统一在顶部居中短暂提示，几秒后自动消失，不在底部显示；`$RECYCLE.BIN`、`System Volume Information` 等系统目录静默跳过。文件状态靠最右显示，悬停或键盘聚焦时由操作按钮替换；未打标签文件不显示占位标签。
 
 顶部是扫描更新与打开资料目录的唯一主操作区；左下菜单仅保留知识库列表、添加、切换与运行环境检查。空库显示目录与操作指引，无资料的标签、加载和扫描中分别提示，不再重复放置操作按钮。
 
@@ -152,7 +156,7 @@ npx @finchtoys/minitools add finch-knowledge
 
 列表显示 **文件名、修改日期、类型、大小、索引状态**。修改日期与大小读取原文件属性，不是索引的日期或体积。点击列头排序，再点切换升降序；排序覆盖当前目录或标签的全部资料，包含后续页面。无法读取的属性显示横线；窄栏自动隐藏次要列，悬停文件行可看完整信息。
 
-搜索框为空时只显示一行提示，输入后才展示检索结果，未匹配时单独提示换关键词。扫描提示三角位于 **扫描更新** 按钮左侧。
+搜索框为空时只显示一行提示，输入后才展示检索结果，未匹配时单独提示换关键词。
 
 ## 文件状态
 

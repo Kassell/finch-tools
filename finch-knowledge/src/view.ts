@@ -150,9 +150,6 @@ const documentStatusVersions = new Map<string, number>();
 let environment: EnvironmentState | null = null;
 let environmentAutoStarted = false;
 let libraryEntered = false;
-/** Last scan only; source directory changes clear this UI-local report. */
-let scanIssues: Array<{ name: string; reason: string; unreachable?: boolean }> = [];
-let scanIssuesCleared = false;
 let libraryPath = '';
 let libraryName = '';
 let libraryIndexStorage: 'source' | 'local' = 'source';
@@ -547,7 +544,7 @@ function closeTagColor(restoreFocus = false): void {
 /** Opaque custom colors are metadata only; cancel never changes a tag. */
 function openTagColor(tag: Tag, anchor: HTMLElement): void {
   if (colorEditingTag === tag.id) { closeTagColor(true); return; }
-  closeTagColor(); closeRowMenu(); closeScanIssues();
+  closeTagColor(); closeRowMenu();
   colorEditingTag = tag.id; colorAnchor = anchor;
   anchor.setAttribute('aria-expanded', 'true');
   const panel = byId('tag-color-picker');
@@ -725,76 +722,6 @@ function openDocument(doc: Document): void {
   const reveal = () => request('reveal', { id: doc.id });
   if (!openListedDocument(bridge, doc.name, doc.path, reveal)) reveal();
 }
-function scanIssueReason(issue: { reason: string; unreachable?: boolean }): string {
-  if (issue.unreachable) return tr('scanIssueUnreachable');
-  if (issue.reason === 'empty_file') return tr('scanIssueEmpty');
-  if (issue.reason === 'image_no_text') return tr('scanIssueImageNoText');
-  if (issue.reason === 'no_text') return tr('scanIssueNoText');
-  if (/^No extractable text\b/i.test(issue.reason)) return tr('scanIssueNoText');
-  const size = issue.reason.match(/nonempty file smaller than ([\d.]+) MB/i);
-  return size ? tr('scanIssueSize', { max: size[1]! }) : issue.reason;
-}
-/** A toolbar-anchored report never consumes space in the document list. */
-function renderScanIssues(): void {
-  const panel = byId('scan-issues'), button = byId('scan-issues-button');
-  const wasOpen = !panel.hidden;
-  button.hidden = scanIssues.length === 0;
-  button.title = tr('scanIssuesButton', { count: scanIssues.length });
-  button.setAttribute('aria-label', button.title);
-  if (!scanIssues.length) { closeScanIssues(); panel.replaceChildren(); return; }
-  const heading = node('h3', 'scan-issues-heading', tr('scanIssuesTitle', { count: scanIssues.length }));
-  heading.id = 'scan-issues-title';
-  const clear = node('button', 'scan-issues-clear', tr('scanIssuesClear')) as HTMLButtonElement;
-  clear.type = 'button'; clear.addEventListener('click', () => { scanIssuesCleared = !scanBusy; scanIssues = []; renderScanIssues(); byId('sync').focus({ preventScroll: true }); });
-  const header = node('div', 'scan-issues-header'); header.append(heading, clear);
-  const list = node('ul', 'scan-issues-list');
-  for (const issue of scanIssues) {
-    const row = node('li', 'scan-issue');
-    // Error messages and names are untrusted text, never HTML or file-open instructions.
-    row.append(node('span', 'scan-issue-name', issue.name), node('span', 'scan-issue-reason', scanIssueReason(issue)));
-    list.append(row);
-  }
-  panel.replaceChildren(header, list);
-  panel.hidden = !wasOpen;
-  button.setAttribute('aria-expanded', String(wasOpen));
-  if (wasOpen) placeMenu(panel, button.getBoundingClientRect());
-}
-function closeScanIssues(restoreFocus = false): void {
-  byId('scan-issues').hidden = true;
-  byId('scan-issues-button').setAttribute('aria-expanded', 'false');
-  if (restoreFocus) byId('scan-issues-button').focus();
-}
-function wireScanIssues(): void {
-  const panel = byId('scan-issues'), button = byId('scan-issues-button');
-  button.addEventListener('click', () => {
-    if (!scanIssues.length) return;
-    if (!panel.hidden) { closeScanIssues(); return; }
-    setMenu(false); closeRowMenu();
-    placeMenu(panel, button.getBoundingClientRect());
-    button.setAttribute('aria-expanded', 'true'); panel.focus({ preventScroll: true });
-  });
-  document.addEventListener('pointerdown', event => {
-    const target = event.target as Node | null;
-    if (!panel.hidden && target && !panel.contains(target) && !button.contains(target)) closeScanIssues();
-  });
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !panel.hidden) { event.preventDefault(); closeScanIssues(true); }
-  });
-  window.addEventListener('resize', () => { if (!panel.hidden) placeMenu(panel, button.getBoundingClientRect()); });
-  window.addEventListener('blur', () => closeScanIssues());
-}
-function reportScanIssues(sync: Reply['sync']): void {
-  if (!sync || scanIssuesCleared) return;
-  scanIssues = [...(sync.skipped ?? []), ...sync.failed, ...sync.unreachable.map(name => ({ name, reason: '', unreachable: true }))];
-  renderScanIssues();
-}
-function skippedScanSummary(sync: NonNullable<Reply['sync']>): string {
-  const skipped = sync.skipped ?? [];
-  const counts = (reason: string) => skipped.filter(item => item.reason === reason).length;
-  const reasons = [['empty_file', 'syncSkippedEmpty'], ['image_no_text', 'syncSkippedImage'], ['no_text', 'syncSkippedNoText']]
-    .filter(([reason]) => counts(reason!) > 0).map(([reason, key]) => tr(key!, { count: counts(reason!) })).join(' · ');
-  return tr('syncSkipped', { count: skipped.length, reasons });
-}
 /** Build one row so re-filing never rebuilds the rest of the visible list. */
 function buildRow(doc: Document): HTMLElement {
   const row = node('div', 'doc'); row.dataset.id = doc.id;
@@ -851,11 +778,27 @@ function buildRow(doc: Document): HTMLElement {
     `${doc.chunks} ${tr('chunk')}`, tr('added', { date: added }), tr('updated', { date: indexed }),
   ].join('\n'));
 
-  // The row itself performs the same action as its own first button, so the pointer cursor is
-  // not a lie: that button is the eye for the file types Finch can show, and the folder for the
-  // ones that leave Finch. Anything that lands on a button keeps its own job.
-  row.addEventListener('click', (event) => {
-    if ((event.target as HTMLElement | null)?.closest('.doc-tools')) return;
+  // Preserve row activation without treating a completed text-selection gesture as a click.
+  const hasRowSelection = (): boolean => {
+    const selection = window.getSelection();
+    return Boolean(selection && !selection.isCollapsed && selection.rangeCount
+      && selection.getRangeAt(0).intersectsNode(row));
+  };
+  let pointerStart: { x: number; y: number } | null = null;
+  let dragged = false, selecting = false;
+  row.addEventListener('pointerdown', event => {
+    pointerStart = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
+    dragged = false; selecting = hasRowSelection();
+  });
+  row.addEventListener('pointermove', event => {
+    if (pointerStart && Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 4) dragged = true;
+  });
+  row.addEventListener('pointercancel', () => { pointerStart = null; dragged = true; });
+  row.addEventListener('click', event => {
+    if ((event.target as HTMLElement | null)?.closest('button, a, input, textarea, select')) return;
+    const moved = pointerStart && Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 4;
+    pointerStart = null;
+    if (event.button !== 0 || event.detail > 1 || dragged || moved || selecting || hasRowSelection()) return;
     openDocument(doc);
   });
   row.addEventListener('keydown', event => {
@@ -1176,7 +1119,7 @@ function wireWindowActivity(): void {
   const root = document.documentElement;
   const deactivate = (): void => {
     root.classList.add('window-inactive', 'pointer-quiet');
-    closeRowMenu(); closeTagColor(); closeScanIssues(); setMenu(false);
+    closeRowMenu(); closeTagColor(); setMenu(false);
     const active = document.activeElement as HTMLElement | null;
     // Preserve text drafts when switching applications; only transient action focus is cleared.
     if (active?.closest('.doc') || active?.matches('button, a')) active.blur();
@@ -1188,7 +1131,11 @@ function wireWindowActivity(): void {
     else if (document.hasFocus()) root.classList.remove('window-inactive');
   });
   const resumePointer = (): void => {
-    if (document.hasFocus()) root.classList.remove('pointer-quiet');
+    if (!document.hidden && document.hasFocus()) {
+      // Embedded views can miss focus events when returning from a host-owned preview.
+      root.classList.remove('window-inactive');
+      root.classList.remove('pointer-quiet');
+    }
   };
   document.addEventListener('pointermove', resumePointer, { passive:true });
   document.addEventListener('pointerdown', resumePointer, { passive:true });
@@ -1199,7 +1146,7 @@ function wireTagContextMenu(): void {
   const close = (): void => { menu.hidden = true; };
   section.addEventListener('contextmenu', event => {
     if ((event.target as HTMLElement | null)?.closest('input, textarea')) return;
-    event.preventDefault(); event.stopPropagation(); closeRowMenu(); setMenu(false); closeTagColor(); closeScanIssues();
+    event.preventDefault(); event.stopPropagation(); closeRowMenu(); setMenu(false); closeTagColor();
     const box = section.getBoundingClientRect();
     const x = event.clientX || box.left + 16, y = event.clientY || box.top + 36;
     placeMenu(menu, { left:x, right:x, top:y, bottom:y, width:0, height:0 });
@@ -1417,7 +1364,7 @@ function applyLibrary(info: LibraryInfo | undefined): boolean {
     selectedTag = null; selectedDirectory = null;
     directories = []; expandedDirectories.clear(); tags = []; docs = [];
     total = 0; beforeOffset = 0; nextOffset = 0;
-    documentStatusVersions.clear(); scanIssuesCleared = false; scanIssues = []; renderScanIssues();
+    documentStatusVersions.clear();
     renderDirectories(); renderTags(); renderDocs();
     setScanBusy(false);
   }
@@ -1561,7 +1508,6 @@ async function localeChanged(locale: string): Promise<void> {
   document.documentElement.lang = language;
   copy = nextCopy;
   applyCopy();
-  renderScanIssues();
   document.documentElement.classList.remove('booting');
 }
 function resetSearch(): void {
@@ -1670,24 +1616,18 @@ if (bridge) {
     }
     // This is only an acknowledgement; keep the request until its final outcome arrives.
     if (data.type === 'syncStarted') return;
-    if (data.type === 'scanStarted') { scanIssuesCleared = false; setScanBusy(true); return; }
+    if (data.type === 'scanStarted') { setScanBusy(true); return; }
     if (data.type === 'scanProgress') {
       if (data.root && data.root !== libraryPath) return;
       updateScanProgress(data.percent, data.message);
       return;
     }
-    if (data.type === 'scanFailed') { setScanBusy(false); toast(data.error ?? '', 'error'); return; }
+    if (data.type === 'scanFailed') { setScanBusy(false); return; }
     if (data.type === 'scanDone') {
       setScanBusy(false);
-      const sync = data.sync;
-      reportScanIssues(sync);
       // Manual scans also get a final reply; only that reply owns their completion toast.
       if ([...pending.values()].some(task => task.type === 'sync')) return;
-      if (sync && scanIssues.length) {
-        const summary = [tr('syncFinished')];
-        if (sync.skipped?.length) summary.push(skippedScanSummary(sync));
-        summary.push(tr('syncDetails')); toast(summary.join(' '), 'info');
-      }
+      toast(tr('syncFinished'), 'success');
       return;
     }
     if (data.type === 'changed') {
@@ -1728,7 +1668,7 @@ if (bridge) {
     if (data.type === 'error') {
       loadingPage = false;
       byId('list-end').textContent = '';
-      if (task.type === 'sync') setScanBusy(false);
+      if (task.type === 'sync') { setScanBusy(false); return; }
       if (task.type.startsWith('library')) setLibraryBusy(false);
       toast(data.error ?? '', 'error'); return;
     }
@@ -1750,20 +1690,8 @@ if (bridge) {
       case 'syncDone': {
         setScanBusy(false);
         const sync = data.sync ?? { updated: [], removed: [], unchanged: 0, unreachable: [], failed: [] };
-        reportScanIssues(sync);
         const changed = sync.updated.length + sync.removed.length;
-        // Every recorded source lands in one of these buckets, so an empty total means the library
-        // simply has no source files to follow up on — not that everything is up to date.
-        const tracked = changed + sync.unchanged + sync.unreachable.length + sync.failed.length + (sync.skipped?.length ?? 0);
-        const details: string[] = [tr('syncFinished')];
-        if (!tracked) details.push(tr('syncNoSources'));
-        else if (changed > 0) details.push(tr('syncDone', { updated: sync.updated.length, removed: sync.removed.length, unchanged: sync.unchanged }));
-        else if (!sync.unreachable.length && !sync.failed.length && !sync.skipped?.length && !sync.moved?.length) details.push(tr('syncIdle'));
-        if (sync.moved?.length) details.push(tr('syncMoved', { count: sync.moved.length }));
-        if (sync.skipped?.length) details.push(skippedScanSummary(sync));
-        const hasNotices = Boolean(scanIssues.length);
-        if (hasNotices) details.push(tr('syncDetails'));
-        toast(details.join(' ') || tr('syncFinished'), hasNotices ? 'info' : 'success');
+        toast(tr('syncFinished'), 'success');
         if (changed || sync.moved?.length) { request('tags'); resetPage(); }
         break;
       }
@@ -1880,6 +1808,5 @@ if (bridge) {
   wireColumns();
   wireWorkspaceResize(byId('workspace'), byId('workspace-resizer'));
   wireTagColor();
-  wireScanIssues();
   wireSearchDialog();
 } else { status(tr('unavailable'), true); void localeChanged(navigator.language || 'en-US'); }

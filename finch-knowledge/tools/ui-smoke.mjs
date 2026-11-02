@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +48,7 @@ function fixture() {
   let listener;
   let tags = [{ id: 'a', name: '工作', color: 'blue' }, { id: 'b', name: '收藏', color: 'purple' }, { id: 'c', name: '重要', color: 'red' }];
   let docs = ['unassigned.md', 'tagged.md'].map((name, index) => ({ id: String(index), path: `/library/notes/${name}`, name: `notes/${name}`, tags: index ? ['a', 'b'] : [], status: 'ready', chunks: 1, indexedChunks: 1, added_at: 1, indexed_at: 1, size_bytes: index ? 1024 : 0, modified_at: Date.UTC(2020 + index, 0, 1), file_type: 'md' }));
-  let directories = [{ path: '', parent: null, name: '', count: 2 }, { path: 'notes', parent: '', name: 'notes', count: 2 }];
+  let directories = [{ path: '', parent: null, name: '', count: 2 }, { path: 'notes', parent: '', name: 'notes', count: 2 }, { path: 'notes/sub', parent: 'notes', name: 'sub', count: 1 }];
   const libraries = [{ id: 'work', root: '/library', name: '工作资料' }, { id: 'personal', root: '/personal', name: '个人资料' }, { id: 'offline', root: '/offline', name: '离线资料' }];
   let current = libraries[0], libraryVersion = 1;
   const stores = new Map([['work', { tags, docs, directories }], ['personal', {
@@ -60,13 +60,13 @@ function fixture() {
   const allTags = () => [{ id: 'default', name: '', count: docs.filter(doc => !doc.tags.length).length }, ...tags.map(tag => ({ ...tag, count: docs.filter(doc => doc.tags.includes(tag.id)).length }))];
   const emit = message => listener?.(JSON.parse(JSON.stringify({ root: current.root, libraryVersion, ...message })));
   window.testEmit = emit;
-  window.testToasts = []; window.testColors = []; window.testRequests = [];
+  window.testToasts = []; window.testColors = []; window.testRequests = []; window.testPreviews = [];
   window.testDensity = mode => {
     tags.splice(0, tags.length, ...(mode === 'many' ? Array.from({ length: 80 }, (_, i) => ({ id: `t${i}`, name: `标签 ${i}`, color: 'gray' })) : []));
     directories.splice(0, directories.length, { path: '', parent: null, name: '', count: 2 }, ...(mode === 'many' ? Array.from({ length: 80 }, (_, i) => ({ path: `folder${i}`, parent: '', name: `目录 ${i}`, count: 1 })) : []));
     emit({ type: 'changed', root: '/library', tags: allTags(), directories, change: { kind: 'tagColor' } });
   };
-  window.finch = { onMessage(fn) { listener = fn; }, ui: { toast: async options => { window.testToasts.push(options); }, confirm: async () => ({ confirmed: false }) },
+  window.finch = { appView: { openPreview: async path => { window.testPreviews.push(path); } }, onMessage(fn) { listener = fn; }, ui: { toast: async options => { window.testToasts.push(options); }, confirm: async () => ({ confirmed: false }) },
     postMessage(message) {
       window.testRequests.push(message);
       queueMicrotask(() => {
@@ -187,6 +187,52 @@ try {
     await call('Input.dispatchKeyEvent', { type: 'keyDown', key: value, code: value, windowsVirtualKeyCode: code });
     await call('Input.dispatchKeyEvent', { type: 'keyUp', key: value, code: value, windowsVirtualKeyCode: code });
   };
+  await click('.directory-toggle:not(:disabled)');
+  const treeGeometry = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.directory-row')];
+    const first = rows[0], child = rows[1];
+    const arrow = first.querySelector('.directory-toggle svg').getBoundingClientRect();
+    const folder = first.querySelector('.directory-choice svg').getBoundingClientRect();
+    const childFolder = child.querySelector('.directory-choice svg').getBoundingClientRect();
+    const toggle = first.querySelector('.directory-toggle').getBoundingClientRect();
+    return { gap: folder.left - arrow.right, indent: childFolder.left - folder.left, toggleWidth: toggle.width, childVisible: child.getBoundingClientRect().height > 0, folderWidth: folder.width };
+  })()`);
+  assert.ok(treeGeometry.gap >= 4 && treeGeometry.gap <= 8, 'arrow sits close to the folder without touching');
+  assert.equal(treeGeometry.indent, 10, 'expanded child indentation is compact');
+  assert.equal(treeGeometry.toggleWidth, 18, 'compact spacing preserves the arrow hit area');
+  assert.equal(treeGeometry.folderWidth, 16); assert.equal(treeGeometry.childVisible, true);
+  console.log('Directory geometry:', JSON.stringify(treeGeometry));
+  if (process.env.FINCH_UI_SCREENSHOT) {
+    const capture = await call('Page.captureScreenshot', { format: 'png' });
+    await writeFile(process.env.FINCH_UI_SCREENSHOT, Buffer.from(capture.data, 'base64'));
+  }
+  await click('.directory-toggle:not(:disabled)');
+  // Real pointer selection, including word selection, must never activate a document.
+  const titleBox = await evaluate("(() => { const r=document.querySelector('.doc-title').getBoundingClientRect(); return {x:r.x+2,y:r.y+r.height/2,width:r.width}; })()");
+  await call('Input.dispatchMouseEvent', { type:'mousePressed', x:titleBox.x, y:titleBox.y, button:'left', clickCount:1 });
+  await call('Input.dispatchMouseEvent', { type:'mouseMoved', x:titleBox.x+titleBox.width-4, y:titleBox.y, button:'left', buttons:1 });
+  await call('Input.dispatchMouseEvent', { type:'mouseReleased', x:titleBox.x+titleBox.width-4, y:titleBox.y, button:'left', clickCount:1 });
+  assert.ok(await evaluate('Boolean(window.getSelection().toString())'), 'title is selectable with a real drag');
+  assert.equal(await evaluate('window.testPreviews.length'), 0, 'dragging a title never opens it');
+  await click('.doc-title');
+  const titlePoint = await moveTo('.doc-title');
+  await call('Input.dispatchMouseEvent', { type:'mousePressed', ...titlePoint, button:'left', clickCount:2 });
+  await call('Input.dispatchMouseEvent', { type:'mouseReleased', ...titlePoint, button:'left', clickCount:2 });
+  assert.ok(await evaluate('Boolean(window.getSelection().toString())'), 'double-click still selects a word');
+  assert.equal(await evaluate('window.testPreviews.length'), 0, 'interacting with an existing selection never opens it');
+  await evaluate('window.getSelection().removeAllRanges(); document.activeElement.blur(); window.dispatchEvent(new Event("blur"))');
+  await moveTo('#heading'); await moveTo('.doc-title');
+  assert.equal(await evaluate('document.documentElement.classList.contains("window-inactive")'), false, 'fresh pointer recovers a missed focus event');
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".doc-tools")).visibility'), 'visible');
+  const hover = await evaluate('getComputedStyle(document.querySelector(".doc")).backgroundColor');
+  assert.notEqual(hover, 'rgba(0, 0, 0, 0)', 'hover band remains visible after returning');
+  await click('.doc-title');
+  assert.equal(await evaluate('window.testPreviews.length'), 1, 'a normal row click still opens exactly once');
+  await click('.doc .doc-tools button');
+  assert.equal(await evaluate('window.testPreviews.length'), 2, 'explicit preview opens exactly once without bubbling');
+  await evaluate('document.querySelector(".doc").focus()'); await key('Enter', 13);
+  assert.equal(await evaluate('window.testPreviews.length'), 3, 'keyboard activation remains available');
+  await evaluate('document.activeElement.blur()'); await moveTo('#heading');
   const sidebarWidth = () => evaluate("document.querySelector('.sidebar').getBoundingClientRect().width");
   const resizeBy = async delta => {
     const point = await moveTo('#workspace-resizer');
@@ -311,23 +357,10 @@ try {
   await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1, y: 1, button: 'left', clickCount: 1 });
   await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1, y: 1, button: 'left', clickCount: 1 });
   await evaluate("document.querySelector('#sync').click()");
-  await waitFor("window.testToasts.length === 1 && !document.querySelector('#scan-issues-button').hidden");
+  await waitFor('window.testToasts.length === 1');
   const result = await evaluate('window.testToasts[0]');
-  assert.equal(result.variant, 'info'); assert.equal(result.position, 'TC'); assert.match(result.title, /扫描完成/); assert.doesNotMatch(result.title, /失败/);
-  assert.equal(await evaluate("document.querySelector('#scan-issues').hidden"), true);
-  for (const width of [1200, 520]) {
-    await call('Emulation.setDeviceMetricsOverride', { width, height: 850, deviceScaleFactor: 1, mobile: false });
-    const before = await evaluate("document.querySelector('#documents-scroll').getBoundingClientRect().y");
-    await evaluate("document.querySelector('#scan-issues-button').click()");
-    const popup = await evaluate("(() => { const p = document.querySelector('#scan-issues'), r = p.getBoundingClientRect(); return { hidden:p.hidden, x:r.x, y:r.y, right:r.right, bottom:r.bottom, rows:p.querySelectorAll('.scan-issue').length, inList:document.querySelector('.library').contains(p) }; })()");
-    assert.equal(popup.hidden, false); assert.equal(popup.inList, false); assert.equal(popup.rows, 2);
-    assert.ok(popup.x >= 7 && popup.right <= width - 7 && popup.y >= 7 && popup.bottom <= 843);
-    assert.equal(await evaluate("document.querySelector('#documents-scroll').getBoundingClientRect().y"), before, 'popover does not shift list');
-    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-    assert.equal(await evaluate("document.querySelector('#scan-issues').hidden"), true);
-    assert.equal(await evaluate("document.activeElement.id"), 'scan-issues-button');
-  }
+  assert.equal(result.variant, 'success'); assert.equal(result.position, 'TC'); assert.equal(result.title, '扫描完成。');
+  assert.equal(await evaluate("document.querySelectorAll('#scan-issues-button, #scan-issues').length"), 0, 'scan warnings are removed, not hidden');
   await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 850, deviceScaleFactor: 1, mobile: false });
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   assert.equal(await evaluate("document.querySelector('#tags-title').textContent"), '标签');
@@ -426,7 +459,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#search-dialog').open"), false);
   await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 850, deviceScaleFactor: 1, mobile: false });
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  assert.ok(await evaluate("document.querySelector('#scan-issues-button').getBoundingClientRect().right <= document.querySelector('#sync').getBoundingClientRect().left"));
+  assert.equal(await evaluate("document.querySelectorAll('.masthead-tools [data-icon=triangle-alert]').length"), 0);
   await evaluate("window.beforeBadge = window.testRequests.length");
   await click('.doc[data-id="1"] .doc-tag[data-tag-id="a"]');
   await waitFor("document.querySelector('#library-title').textContent === '工作' && document.querySelectorAll('.doc').length === 1");
@@ -434,11 +467,9 @@ try {
   assert.equal(await evaluate("window.testRequests.slice(window.beforeBadge).every(message => message.type === 'page')"), true, 'badge click filters only; it does not open or retag a file');
   await evaluate("document.querySelector('.directory-all').click()");
   await waitFor("document.querySelectorAll('.doc').length === 2 && document.querySelector('#library-title').textContent === '全部资料'");
-  await evaluate("document.querySelector('#scan-issues-button').click(); document.querySelector('.scan-issues-clear').click()");
-  assert.equal(await evaluate("document.querySelector('#scan-issues-button').hidden && document.querySelector('#scan-issues').hidden"), true);
-  assert.equal(await evaluate('document.activeElement.id'), 'sync');
   await evaluate("document.querySelector('#sync').click()");
-  await waitFor("window.testToasts.length === 2 && !document.querySelector('#scan-issues-button').hidden");
+  await waitFor('window.testToasts.length === 2');
+  assert.equal(await evaluate('window.testToasts[1].title'), '扫描完成。');
   await evaluate("window.testDensity('many')");
   for (const width of [1200, 520]) {
     await call('Emulation.setDeviceMetricsOverride', { width, height: 850, deviceScaleFactor: 1, mobile: false });

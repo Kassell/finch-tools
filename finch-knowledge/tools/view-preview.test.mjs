@@ -97,11 +97,13 @@ test('a preview that opens successfully is never followed by an external hand-of
   assert.deepEqual(fallbacks, [], 'a pending preview is not a failure');
 });
 
-test('the row and its first button share one route, and the file manager stays in the row menu', async () => {
+test('row clicks open documents but text-selection gestures do not', async () => {
   const view = await readFile(new URL('../src/view.ts', import.meta.url), 'utf8');
   const html = await readFile(new URL('../src/view.html', import.meta.url), 'utf8');
-  // Both entry points go through openDocument, so the row cannot drift from its own button.
-  assert.match(view, /row\.addEventListener\('click',[\s\S]{0,200}openDocument\(doc\)/);
+  const buildRow = view.slice(view.indexOf('function buildRow('), view.indexOf('function buildEmptyState('));
+  assert.match(buildRow, /row\.addEventListener\('click'/);
+  assert.match(buildRow, /dragged \|\| moved \|\| selecting \|\| hasRowSelection\(\)/, 'both pointer movement and text selections suppress activation');
+  assert.match(buildRow, /row\.addEventListener\('keydown',[\s\S]{0,220}openDocument\(doc\)/, 'focused keyboard activation remains explicit');
   assert.match(view, /function openDocument\(doc: Document\): void \{[\s\S]{0,200}openListedDocument\(bridge, doc\.name, doc\.path, reveal\)/);
   // The button's icon is the route: an eye where Finch previews, a folder where it does not.
   assert.match(view, /const previewable = previewRoute\(doc\.name\) !== 'external';/);

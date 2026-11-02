@@ -141,10 +141,11 @@ svg { flex: none; width: 18px; height: 18px; }
 /* Spend 12px of the existing right inset on 4px clearance + the 8px scrollbar. */
 .directory-tree, .tags-section .tag-list { margin-right: -12px; padding-right: 4px; }
 .directory-list { margin: 0; padding: 0; list-style: none; }
-.directory-list .directory-list { padding-left: 14px; }
+.directory-list .directory-list { padding-left: 10px; }
 .directory-row { display: flex; align-items: center; min-width: 0; border-radius: var(--finch-radius-md, 10px); }
 .directory-choice { display: flex; flex: 1; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 30px; padding: 4px 8px; border: 0; border-radius: var(--finch-radius-md, 10px); background: transparent; color: var(--finch-text-secondary, var(--fallback-muted)); text-align: left; }
-.directory-choice svg { width: 16px; height: 16px; }
+.directory-row > .directory-choice { padding-left: 4px; }
+.directory-choice svg { flex: none; width: 16px; height: 16px; }
 .directory-choice .tag-count { margin-left: auto; }
 .directory-choice.active { background: var(--finch-bg-active, var(--fallback-active)); color: var(--finch-accent, var(--fallback-accent)); }
 .directory-choice.active .tag-name { color: inherit; }
@@ -411,20 +412,7 @@ svg { flex: none; width: 18px; height: 18px; }
 @container (max-width: 720px) { .doc-name .doc-tag { display: none; } }
 @container (max-width: 620px) { .doc-modified, .column-modified { display: none; } }
 @container (max-width: 480px) { .doc-size, .column-size { display: none; } }
-/* Scan notices are a toolbar popover, never an in-flow panel in the document list. */
-.scan-issues-trigger { color: var(--finch-warning, #b78324); }
-.scan-issues { position: absolute; z-index: 70; width: min(460px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow: auto; margin: 0; border: 1px solid var(--finch-border, var(--fallback-border)); border-radius: var(--finch-radius-md, 10px); background: var(--finch-bg-elevated, var(--fallback-panel)); box-shadow: var(--finch-shadow-md, 0 12px 32px #0002); color: var(--finch-text-secondary, var(--fallback-muted)); font-size: 12px; }
-.scan-issues[hidden], .scan-issues-trigger[hidden] { display: none; }
-.scan-issues:focus { outline: none; }
-.scan-issues-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px 8px; }
-.scan-issues-clear { flex: none; padding: 3px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--finch-accent, var(--fallback-accent)); font-size: 12px; cursor: pointer; }
-.scan-issues-clear:hover { background: var(--finch-bg-hover, var(--fallback-hover)); }
-.scan-issues-heading { margin: 0; padding: 0; color: var(--finch-text-primary, var(--fallback-ink)); font-size: 13px; font-weight: 600; }
-.scan-issues-list { max-height: min(280px, calc(100dvh - 140px)); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: 0 16px 12px 30px; }
-.scan-issue { padding: 5px 0; overflow-wrap: anywhere; }
-.scan-issue-name, .scan-issue-reason { display: block; }
-.scan-issue-name { color: var(--finch-text-primary, var(--fallback-ink)); }
-/* No rule between rows: the hover band already separates them, and the whole row opens the file. */
+/* Row clicks open documents; title dragging remains native text selection. */
 .doc { position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; min-width: 0; min-height: 46px; padding: 7px 9px; border-radius: var(--finch-radius-sm, 8px); cursor: pointer; }
 .doc:hover, .doc:focus-within { background: var(--finch-bg-hover, var(--fallback-hover)); }
 .doc:focus-visible { outline: 2px solid var(--finch-accent, var(--fallback-accent)); outline-offset: -2px; }
@@ -440,7 +428,7 @@ svg { flex: none; width: 18px; height: 18px; }
 .doc-icon { display: grid; flex: none; place-items: center; }
 .doc-icon-image { display: block; width: 16px; height: 16px; }
 /* Preserve collection status; long names may truncate before it. */
-.doc-title { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--finch-text-primary, var(--fallback-ink)); font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.doc-title { user-select: text; cursor: text; flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--finch-text-primary, var(--fallback-ink)); font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 /* Only assigned tags appear as badges. */
 .doc-tag { flex: 0 0 auto; max-width: 132px; overflow: hidden; padding: 1px 8px; border: 1px solid var(--finch-border, var(--fallback-border)); border-radius: 999px; color: var(--finch-text-primary, var(--fallback-ink)); font-size: 11px; line-height: 1.7; text-overflow: ellipsis; white-space: nowrap; }
 /* The counter for tags a row did not have room for. */
@@ -593,23 +581,23 @@ dialog::backdrop { background: color-mix(in srgb, var(--finch-bg-root, #17221e) 
 @media (max-width: 600px) { .documents:has(> .library-empty) { padding: 24px 14px; } .empty-illustration { width: 56px; height: 56px; margin-bottom: 16px; border-radius: 18px; } .empty-heading { font-size: 18px; } .empty-description { font-size: 12px; } .empty-directory { margin-top: 16px; } .empty-steps { gap: 10px; margin-top: 18px; } }
 
 /* Finch-style transient scrollbars: preserve native scrolling and a constant gutter. */
-:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list) {
+:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list) {
   --scrollbar-thumb: transparent;
   scrollbar-gutter: stable;
 }
-:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list):is(:hover, .is-scrolling) {
+:where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list):is(:hover, .is-scrolling) {
   --scrollbar-thumb: color-mix(in srgb, var(--finch-text-tertiary, var(--fallback-muted)) 55%, transparent);
 }
 @supports selector(::-webkit-scrollbar) {
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar { width: 8px; height: 8px; }
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-track,
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-corner { background: transparent; }
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background-color: var(--scrollbar-thumb); background-clip: padding-box; transition: background-color .16s ease; }
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar { width: 8px; height: 8px; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-track,
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-corner { background: transparent; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background-color: var(--scrollbar-thumb); background-clip: padding-box; transition: background-color .16s ease; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 }
 @supports not selector(::-webkit-scrollbar) {
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list) { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list) { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .scan-issues, .scan-issues-list, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-thumb { transition: none; }
+  :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-thumb { transition: none; }
 }
