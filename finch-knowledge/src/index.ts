@@ -314,6 +314,7 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (message === 'Finish current indexing or edits before switching directories.') return t('library.busy');
     if (message.startsWith('Unsupported knowledge index format.')) return t('library.unsupportedIndex');
     if (message === 'Choose a library directory.' || message === 'Choose an absolute library directory.' || message === 'Choose a directory, not a file.') return t('library.invalidDirectory');
+    if (message === 'INVALID_DIRECTORY_PICKER_RESPONSE') return t('library.pickerInvalid');
     if (message === 'This is already the working library directory.') return t('library.same');
     if (message === 'Library is no longer registered.') return t('library.missing');
     if (message.startsWith('Unable to determine the source filesystem') || message === 'Drive type is unavailable.' || message === 'Network share identity is unavailable.') return t('library.filesystemUnavailable');

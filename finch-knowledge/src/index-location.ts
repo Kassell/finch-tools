@@ -24,7 +24,7 @@ const fixedWindowsDrives = new Map<string, Promise<WindowsDrive>>();
 export async function inspectSourceFilesystem(root: string, platform: NodeJS.Platform = process.platform, probe: FilesystemProbe = {}): Promise<SourceFilesystem> {
   const run = probe.run ?? runCommand;
   if (platform === 'win32') {
-    const normal = win32.normalize(root).replace(/^\\\\\?\\UNC\\/i, '\\\\');
+    const normal = win32.normalize(root).replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\(?=[a-z]:\\)/i, '');
     if (normal.startsWith('\\\\') && !normal.startsWith('\\\\?\\') && !normal.startsWith('\\\\.\\')) return { network: true, identity: `smb:${normal.toLowerCase().replace(/\\+$/, '')}` };
     const drive = /^[a-z]:/i.exec(normal)?.[0].toUpperCase();
     if (!drive) throw new Error('Unable to determine the source filesystem. Reconnect the mounted drive and retry.');

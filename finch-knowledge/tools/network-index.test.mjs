@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile, readFile, readdir, rename, stat } from 'node
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fixtureLink, fixtureRm, nativeTarget } from './test-platform.mjs';
-import { inspectSourceFilesystem, remoteIndexKey, remoteIndexRoot, openSourceDirectory, scanSourceDirectory, KnowledgeStore } from '../dist/index.js';
+import { inspectSourceFilesystem, remoteIndexKey, remoteIndexRoot, openSourceDirectory, scanSourceDirectory, KnowledgeStore, pickDirectory } from '../dist/index.js';
 
 const windows = provider => ({ run: async () => JSON.stringify({ type: 4, root: provider }) });
 test('Windows UNC, extended UNC and mapped paths identify the same share subdirectory', async () => {
@@ -149,4 +149,17 @@ test('an empty leftover mountpoint or a remapped share cannot erase the old remo
     await assert.rejects(store.importFile(join(f.source, 'wrong.md'), 'wrong.md', 'default'), /disconnected or mapped/);
     assert.equal((await store.list()).length, 1);
   } finally { await store.close(); }
+});
+
+test('Windows initialization accepts selected SMB locations before any library exists', async () => {
+  const expected = await inspectSourceFilesystem('\\\\nas\\资料\\工作', 'win32');
+  for (const path of ['\\\\nas\\资料\\工作', '\\\\?\\UNC\\nas\\资料\\工作', 'Z:\\工作', '\\\\?\\Z:\\工作']) {
+    const selected = await pickDirectory('Choose first library', '', async () => ({ stdout: 'True\r\nFINCH_DIRECTORY:' + Buffer.from(path, 'utf8').toString('base64') }), 'win32');
+    const filesystem = await inspectSourceFilesystem(selected, 'win32', windows('\\\\nas\\资料'));
+    assert.deepEqual(filesystem, expected);
+    assert.equal(remoteIndexKey(filesystem.identity), remoteIndexKey(expected.identity));
+  }
+});
+test('Windows extended local filesystem paths keep local index placement', async () => {
+  assert.equal((await inspectSourceFilesystem('\\\\?\\C:\\资料', 'win32', { run: async () => JSON.stringify({ type: 3 }) })).network, false);
 });

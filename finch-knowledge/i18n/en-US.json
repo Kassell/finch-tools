@@ -73,6 +73,7 @@
   "library.pathHint": "Enter an existing folder on a local drive or a mounted volume. Engine downloads stay in Finch's local data directory.",
   "library.directory": "Library folder",
   "library.invalidDirectory": "Choose an existing absolute folder.",
+  "library.pickerInvalid": "The folder picker did not return a valid location. Choose a local folder or a connected network share again.",
   "library.same": "That folder already holds the working library.",
   "library.nested": "The library folder cannot contain, or sit inside, the current one.",
   "library.notEmpty": "That folder holds no library and is not empty. Pick a folder that already holds one, or an empty folder.",

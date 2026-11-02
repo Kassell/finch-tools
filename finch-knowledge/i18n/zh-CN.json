@@ -73,6 +73,7 @@
   "library.pathHint": "输入本地磁盘或已挂载卷上的现有目录。引擎下载缓存仍放在 Finch 本机数据目录。",
   "library.directory": "资料库目录",
   "library.invalidDirectory": "请选择现有的绝对路径目录。",
+  "library.pickerInvalid": "目录选择器未返回有效位置，请重新选择本地目录或已连接的网络共享。",
   "library.same": "该目录已经是当前工作资料库。",
   "library.nested": "资料库目录不能包含、也不能位于当前目录之内。",
   "library.notEmpty": "该文件夹里没有资料库，也不是空文件夹。请选择已有资料库的文件夹，或一个空文件夹。",
