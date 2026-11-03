@@ -29,12 +29,12 @@ function fixture(selectedTops = [900], height = 300, contentHeight = 1000) {
     ['row-menu-note', { textContent: '' }],
     ['documents', { querySelector: () => row }],
     ['documents-scroll', { scrollTop: 2400 }],
-    ['library-menu', { hidden: true }],
-    ['library-menu-button', { setAttribute() {} }],
+    ['library-menu', { hidden: true, style: {}, classList: { add() {} }, getBoundingClientRect: () => box }],
+    ['library-menu-button', { setAttribute() {}, getBoundingClientRect: () => box }],
   ]);
   const context = createContext({
     window: { scrollX: 0, scrollY: 0, innerWidth: 1200, innerHeight: 800 },
-    document: { getElementById: (id) => elements.get(id) },
+    document: { body: { append(element) { element.portaled = true; } }, getElementById: (id) => elements.get(id) },
   });
   runInContext(code, context);
   return { submenu, attrs, elements, run: (script) => runInContext(script, context) };
@@ -104,6 +104,7 @@ test('opening library actions closes the document menu and its flyout', () => {
   assert.equal(f.submenu.hidden, true);
   assert.equal(f.elements.get('row-menu').hidden, true);
   assert.equal(f.elements.get('library-menu').hidden, false);
+  assert.equal(f.elements.get('library-menu').portaled, true, 'library picker escapes workspace clipping');
   f.run(`fillRowSubmenu = () => {};
     openRowMenu({ id: 'one', indexed_at: 0 }, document.getElementById('row-classify'));`);
   assert.equal(f.elements.get('library-menu').hidden, true);

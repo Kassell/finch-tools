@@ -50,7 +50,7 @@ async function harness(t) {
   open({ id: 'boundary', view: 'appView', postMessage: async message => { sent.push(message); },
     onDidReceiveMessage(handler) { receive = handler; return { dispose() {} }; }, onDidDispose() { return { dispose() {} }; } });
   const exec = { cwd: root, signal: new AbortController().signal, progress: { report() {} } };
-  return { source, tool, receive, sent, exec };
+  return { source, tool, receive, sent, exec, values };
 }
 
 test('the public schema and runtime reject retired source-writing actions, including stale clients', async t => {
@@ -96,7 +96,8 @@ test('indexing, classification and repeated scans only write private knowledge d
   const progress = sent.filter(message => message.type === 'scanProgress');
   assert.ok(progress.some(message => message.percent === 0));
   assert.ok(progress.some(message => message.percent === 100));
-  assert.ok(progress.every(message => message.root === source && message.percent >= 0 && message.percent <= 100));
+  assert.ok(progress.every(message => message.root === source && (message.percent === undefined || message.percent >= 0 && message.percent <= 100)));
+  assert.ok(progress.some(message => message.percent === undefined), 'directory discovery is indeterminate, never a fabricated total');
   assert.match(await call({ action: 'search', query: 'Originalkeyword' }), /notes.md/);
   await call({ action: 'delete_tag', tag: 'Topics', force: true });
   for (const path of ['../escape.md', '.knowledge/catalog.sqlite', '.KNOWLEDGE/catalog.sqlite']) {
@@ -113,4 +114,28 @@ test('the directory UI exposes scanning and source-folder access, not file manag
   for (const id of ['add', 'file-input', 'backup', 'row-remove']) assert.doesNotMatch(html, new RegExp(`id="${id}"`));
   assert.doesNotMatch(view, /request\('(uploadStart|uploadChunk|uploadFinish|addFiles|delete|backup)'/);
   assert.match(view, /directoryDropHint/);
+});
+
+test('the real panel can pause a scan, retain pending inventory, then resume with persistent pause cleared', async t => {
+  const f = await harness(t);
+  for (let i = 0; i < 3; i++) await writeFile(join(f.source, `queued${i}.txt`), `queuedkeyword${i}`);
+  const push = f.sent.push.bind(f.sent); let pausing;
+  f.sent.push = message => {
+    const count = push(message);
+    if (!pausing && message.type === 'scanProgress' && message.percent === 0) pausing = f.receive({ type: 'scanPause', requestId: 'pause', libraryRoot: f.source });
+    return count;
+  };
+  await f.receive({ type: 'sync', requestId: 'first-scan' }); await pausing;
+  assert.equal(f.sent.find(message => message.requestId === 'first-scan' && message.type === 'syncDone').sync.paused, true);
+  assert.deepEqual(f.values.get('pausedLibraries'), [f.source]);
+  assert.ok(f.sent.some(message => message.type === 'changed' && message.change?.kind === 'scanBatch'), 'live checkpoints reach the actual panel bridge');
+  await f.receive({ type: 'page', requestId: 'paused-page' });
+  const page = f.sent.find(message => message.requestId === 'paused-page');
+  assert.equal(page.total, 5); assert.ok(page.documents.some(doc => doc.issueKind === 'pending')); assert.ok(page.documents.some(doc => doc.status === 'ready'));
+  await f.receive({ type: 'sync', requestId: 'resume-scan' });
+  assert.equal(f.sent.find(message => message.requestId === 'resume-scan' && message.type === 'syncDone').sync.paused, false);
+  assert.deepEqual(f.values.get('pausedLibraries'), []);
+  await f.receive({ type: 'page', requestId: 'resumed-page', refresh: true, anchorPath: join(f.source, 'queued0.txt'), anchorIndex: 0 });
+  const refreshed = f.sent.find(message => message.requestId === 'resumed-page');
+  assert.equal(refreshed.total, 5); assert.equal(refreshed.documents.some(doc => doc.issueKind === 'pending'), false);
 });

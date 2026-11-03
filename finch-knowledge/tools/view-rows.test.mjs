@@ -26,7 +26,8 @@ test('re-filing patches one row instead of reloading the list', async () => {
 
   // The list and the patch share one row builder, so a patched row cannot drift from a rendered
   // one — and the patch itself only ever replaces that single row.
-  assert.match(view, /for \(const doc of docs\) target\.append\(buildRow\(doc\)\);/);
+  assert.match(view, /const row = previous && previous\.dataset\.signature === rowSignature\(doc\) \? previous : buildRow\(doc\);/);
+  assert.match(view, /if \(!preserve\) target\.append\(row\);/);
   assert.match(view, /row\.replaceWith\(buildRow\(updated\)\);/);
   assert.match(view, /function patchTagToggle\(documentId: string, nextTags: string\[\]\): void \{/);
   assert.match(view, /if \(!inScope\(nextTags, selectedTag\)\) \{/);

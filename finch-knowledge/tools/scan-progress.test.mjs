@@ -74,5 +74,5 @@ test('progress from another library is ignored and failures end the bar immediat
   assert.equal(f.element('activity').attrs['aria-valuenow'], undefined);
   f.receive({ type: 'scanFailed', error: 'Source unavailable' });
   assert.equal(f.element('activity').hidden, true);
-  assert.equal(f.toasts.length, 1);
+  assert.equal(f.toasts.length, 0, 'failed scans stop progress without exposing exception details in a toast');
 });

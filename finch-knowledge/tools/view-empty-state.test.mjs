@@ -15,7 +15,7 @@ function all(root) { return [root, ...root.children.flatMap(all)]; }
 async function fixture(locale = 'zh-CN') {
   const { ui } = JSON.parse(await readFile(new URL(`../i18n/${locale}.json`, import.meta.url), 'utf8'));
   const context = createContext({ node, svg: glyph => node('svg', glyph), Files: 'files', TagIcon: 'tag', Loader: 'loader', FolderOpen: 'folder',
-    scanBusy: false, loadingPage: false, selectedTag: null, libraryPath: 'E:\\knowledge', DEFAULT_TAG: 'default', tagName: () => 'Research',
+    scanBusy: false, loadingPage: false, selectedTag: null, selectedDirectory: null, libraryPath: 'E:\\knowledge', DEFAULT_TAG: 'default', tagName: () => 'Research',
     tr: (key, values = {}) => { assert.ok(ui[key], `Missing ui.${key}`); return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), ui[key]); },
   });
   runInContext(code, context);
@@ -74,10 +74,10 @@ test('column headers are hidden for every empty state and restored only when row
   const rendered = await transform(view.slice(begin, finish), { loader: 'ts' });
   const elements = new Map();
   const byId = id => {
-    if (!elements.has(id)) elements.set(id, { children: [], hidden: false, replaceChildren(...items) { this.children = items; }, append(...items) { this.children.push(...items); } });
+    if (!elements.has(id)) elements.set(id, { children: [], hidden: false, classList: { toggle() {} }, replaceChildren(...items) { this.children = items; }, append(...items) { this.children.push(...items); } });
     return elements.get(id);
   };
-  const context = createContext({ byId, docs: [], total: 0, rowMenuDoc: null, rowMenuFlyoutOpen: false,
+  const context = createContext({ byId, node, showIssues: false, loadingPage: false, docs: [], total: 0, rowMenuDoc: null, rowMenuFlyoutOpen: false,
     closeRowMenu() {}, hideRowMenu() {}, restoreRowMenu() {}, tr: () => '', buildEmptyState: () => ({ empty: true }), buildRow: doc => ({ doc }) });
   runInContext(rendered.code, context);
   for (const mode of ['library', 'tag', 'loading', 'scanning']) {

@@ -48,8 +48,12 @@ export interface Passage {
 /** A document carries every tag it belongs to; none means it sits in Unclassified. */
 export interface DocumentSummary { id: string; path: string; name: string; hash: string; tags: string[]; added_at: number; indexed_at: number; chunks: number; source_path: string | null; size_bytes?: number | null; modified_at?: number | null; file_type?: string }
 export interface DocumentStatus extends DocumentSummary { indexState: CoverageState; indexedChunks: number | null; sourceState: SourceState; status: DocumentState; statusReason?: string }
+export type SourceIssueKind = 'pending' | 'unsupported' | 'failed' | 'empty_file' | 'no_text' | 'image_no_text' | 'unavailable';
+export interface SourceIssue { path: string; kind: SourceIssueKind; reason: string }
+export interface SourceIssueDocument extends DocumentSummary { issueKind: SourceIssueKind; statusReason: string }
 export interface TagSummary { id: string; name: string; count: number; color?: string }
 export type DocumentSort = 'name' | 'added' | 'updated' | 'modified' | 'type' | 'size';
+const compareNames = new Intl.Collator('en', { sensitivity: 'base' }).compare;
 const metadataSort = (sort: DocumentSort) => sort === 'modified' || sort === 'type' || sort === 'size';
 function documentOrder(sort: DocumentSort, descending?: boolean): string {
   const column = sort === 'name' ? 'd.name COLLATE NOCASE' : sort === 'added' ? 'd.added_at' : 'd.indexed_at';
@@ -208,7 +212,9 @@ export class KnowledgeStore {
       -- here is what Unclassified means; there is no tag row for it.
       CREATE TABLE IF NOT EXISTS document_tags (document_id TEXT NOT NULL, tag_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (document_id, tag_id));
       CREATE INDEX IF NOT EXISTS document_tags_tag ON document_tags(tag_id, document_id);
-      CREATE TABLE IF NOT EXISTS index_failures (path TEXT PRIMARY KEY, reason TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS index_failures (path TEXT PRIMARY KEY, reason TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS source_folders (path TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS source_issues (path TEXT PRIMARY KEY, kind TEXT NOT NULL, reason TEXT NOT NULL);`);
     if (!this.hasColumn('tags', 'color')) this.catalog.exec("ALTER TABLE tags ADD COLUMN color TEXT NOT NULL DEFAULT 'gray'");
     {
       if (!this.hasColumn('documents', 'relative_path')) this.catalog.exec('ALTER TABLE documents ADD COLUMN relative_path TEXT');
@@ -409,10 +415,147 @@ export class KnowledgeStore {
     await this.writes;
     return this.hydrate(this.catalog.prepare('SELECT * FROM documents ORDER BY indexed_at DESC').all() as unknown as DocumentSummary[]);
   }
+  private fileKey(path: string): string { return process.platform === 'win32' ? path.toLowerCase() : path; }
+  private relativeFile(path: string): string { return relative(this.directoryRoot, path).split(sep).join('/'); }
+  /** Directory-access notices are not files and must never inflate file totals. */
+  private fileIssues(): SourceIssue[] {
+    const folders = new Set((this.catalog.prepare('SELECT path FROM source_folders').all() as Array<{ path: string }>).map(row => this.fileKey(row.path)));
+    const files = new Map<string, SourceIssue>();
+    for (const issue of this.catalog.prepare('SELECT path,kind,reason FROM source_issues').all() as unknown as SourceIssue[]) {
+      if (issue.path !== '' && !folders.has(this.fileKey(issue.path))) files.set(this.fileKey(issue.path), issue);
+    }
+    return [...files.values()];
+  }
+  private filePaths(): string[] {
+    const paths = new Map<string, string>();
+    for (const row of this.catalog.prepare('SELECT path FROM documents').all() as Array<{ path: string }>) {
+      const path = this.relativeFile(row.path); paths.set(this.fileKey(path), path);
+    }
+    for (const issue of this.fileIssues()) if (!paths.has(this.fileKey(issue.path))) paths.set(this.fileKey(issue.path), issue.path);
+    return [...paths.values()];
+  }
+  async fileCount(): Promise<number> { await this.writes; return this.filePaths().length; }
   async directories() {
     await this.writes;
-    const rows = this.catalog.prepare('SELECT name,path FROM documents').all() as Array<{ name: string; path: string }>;
-    return indexedDirectories(rows.map(row => relative(this.directoryRoot, row.path).split(sep).join('/')));
+    const folders = this.catalog.prepare('SELECT path FROM source_folders').all() as Array<{ path: string }>;
+    return indexedDirectories(this.filePaths(), folders.map(row => row.path));
+  }
+  private async browseOrder(sort: DocumentSort, directory: string | null, descending?: boolean, refresh = false, tagId: string | null = null): Promise<Array<DocumentSummary | SourceIssueDocument>> {
+    await this.writes;
+    if (directory !== null) directoryKey(directory);
+    const files = new Map<string, DocumentSummary | SourceIssueDocument>();
+    if (tagId !== null) this.assertTag(tagId);
+    const scope = this.scopeFor(tagId, directory);
+    for (const doc of this.catalog.prepare(`SELECT d.* FROM documents d ${scope.from} ${scope.where}`).all(...scope.params) as unknown as DocumentSummary[]) files.set(this.fileKey(this.relativeFile(doc.path)), doc);
+    if (tagId === null) for (const issue of this.fileIssues()) if (!files.has(this.fileKey(issue.path))) files.set(this.fileKey(issue.path), this.issueDocument(issue));
+    const rows = [...files.values()].filter(doc => insideDirectory(this.relativeFile(doc.path), directory));
+    if (metadataSort(sort)) return this.orderMetadata(rows, sort, descending, refresh) as Promise<Array<DocumentSummary | SourceIssueDocument>>;
+    const reverse = descending ?? sort !== 'name';
+    return rows.sort((a, b) => {
+      const comparison = sort === 'name' ? compareNames(a.name, b.name)
+        : (sort === 'added' ? a.added_at - b.added_at : a.indexed_at - b.indexed_at);
+      return (reverse ? -comparison : comparison) || a.id.localeCompare(b.id);
+    });
+  }
+  /** UI browsing counts physical source paths, independently of index and tag records. */
+  async browsePage(tagId: string | null, sort: DocumentSort, offset: number, limit = 50, directory: string | null = null, descending?: boolean): Promise<{ documents: Array<DocumentSummary | SourceIssueDocument>; total: number }> {
+    if (tagId !== null) return this.page(tagId, sort, offset, limit, directory, descending);
+    const rows = await this.browseOrder(sort, directory, descending, offset === 0);
+    const start = Math.max(0, Math.min(1_000_000, Math.floor(offset) || 0));
+    const page = rows.slice(start, start + Math.max(1, Math.min(50, limit)));
+    if (!metadataSort(sort)) await Promise.all(page.map(doc => this.readMetadata(doc, false)));
+    return { documents: this.hydrate(page) as Array<DocumentSummary | SourceIssueDocument>, total: rows.length };
+  }
+  async browsePosition(id: string, tagId: string | null, sort: DocumentSort, directory: string | null = null, descending?: boolean): Promise<number | null> {
+    if (tagId !== null) return this.position(id, tagId, sort, directory, descending);
+    const position = (await this.browseOrder(sort, directory, descending)).findIndex(doc => doc.id === id);
+    return position < 0 ? null : position;
+  }
+
+  /** Commit a completed scan inventory; unreadable subtrees retain their last known contents. */
+  async replaceSourceInventory(folders: string[], issues: SourceIssue[], blocked: string[], expected: { dev: bigint; ino: bigint }, signal?: AbortSignal): Promise<void> {
+    await this.locked(async () => {
+      await this.assertSourceAvailable();
+      const current = await stat(this.directoryRoot, { bigint: true }).catch(() => null);
+      if (signal?.aborted || !current?.isDirectory() || current.dev !== expected.dev || current.ino !== expected.ino) return;
+      const clean = (path: string) => path === '' ? '' : directoryKey(path);
+      const unavailable = blocked.map(clean);
+      const retained = (path: string) => unavailable.some(parent => parent === '' || path === parent || path.startsWith(`${parent}/`));
+      const previousFolders = this.catalog.prepare('SELECT path FROM source_folders').all() as Array<{ path: string }>;
+      const previousIssues = this.catalog.prepare('SELECT path,kind,reason FROM source_issues').all() as unknown as SourceIssue[];
+      const nextFolders = new Set(previousFolders.filter(row => retained(row.path)).map(row => row.path));
+      for (const folder of folders) if (folder) nextFolders.add(clean(folder));
+      const nextIssues = new Map(previousIssues.filter(row => retained(row.path)).map(row => [row.path, row]));
+      for (const issue of issues) nextIssues.set(clean(issue.path), { ...issue, reason: issue.reason.slice(0, 1000) });
+      this.catalog.exec('BEGIN IMMEDIATE');
+      try {
+        this.catalog.exec('DELETE FROM source_folders; DELETE FROM source_issues;');
+        const folderInsert = this.catalog.prepare('INSERT INTO source_folders(path) VALUES(?)');
+        const issueInsert = this.catalog.prepare('INSERT INTO source_issues(path,kind,reason) VALUES(?,?,?)');
+        for (const path of nextFolders) folderInsert.run(path);
+        for (const issue of nextIssues.values()) issueInsert.run(issue.path, issue.kind, issue.reason);
+        this.catalog.exec('COMMIT');
+      } catch (error) { this.catalog.exec('ROLLBACK'); throw error; }
+    });
+  }
+  /** Checkpoint one completed file without replacing unrelated or still-queued inventory. */
+  async settleSourceFile(path: string, issue: SourceIssue | null, expected: { dev: bigint; ino: bigint }): Promise<boolean> {
+    return this.locked(async () => {
+      await this.assertSourceAvailable();
+      const current = await stat(this.directoryRoot, { bigint: true }).catch(() => null);
+      if (!current?.isDirectory() || current.dev !== expected.dev || current.ino !== expected.ino) return false;
+      path = directoryKey(path);
+      if (issue) this.catalog.prepare('INSERT OR REPLACE INTO source_issues(path,kind,reason) VALUES(?,?,?)').run(path, issue.kind, issue.reason.slice(0, 1000));
+      else this.catalog.prepare('DELETE FROM source_issues WHERE path=?').run(path);
+      return true;
+    });
+  }
+  async issueCount(): Promise<number> {
+    await this.writes;
+    return this.fileIssues().filter(issue => issue.kind !== 'pending').length;
+  }
+  private issueDocument(issue: SourceIssue): SourceIssueDocument {
+    const path = issue.path ? resolve(this.directoryRoot, directoryKey(issue.path)) : this.directoryRoot;
+    return { id: `issue:${issue.path}`, path, name: basename(path), hash: '', tags: [], added_at: 0, indexed_at: 0,
+      chunks: 0, source_path: path, issueKind: issue.kind, statusReason: issue.reason };
+  }
+  async sourceIssue(id: string): Promise<SourceIssueDocument | undefined> {
+    await this.writes;
+    if (!id.startsWith('issue:')) return;
+    const path = id.slice(6); if (path) directoryKey(path);
+    const issue = this.catalog.prepare('SELECT path,kind,reason FROM source_issues WHERE path=?').get(path) as SourceIssue | undefined;
+    return issue ? this.issueDocument(issue) : undefined;
+  }
+  async issuePage(sort: DocumentSort, offset: number, directory: string | null = null, descending?: boolean): Promise<{ documents: SourceIssueDocument[]; total: number }> {
+    await this.writes;
+    if (directory !== null) directoryKey(directory);
+    const issues = this.fileIssues().filter(issue => issue.kind !== 'pending' && insideDirectory(issue.path, directory)).sort((a, b) => compareNames(a.path, b.path));
+    let documents = issues.map(issue => this.issueDocument(issue));
+    if (metadataSort(sort)) documents = await this.orderMetadata(documents, sort, descending, offset === 0) as SourceIssueDocument[];
+    else if (descending === true) documents.reverse();
+    const start = Math.max(0, Math.min(1_000_000, Math.floor(offset) || 0));
+    const page = documents.slice(start, start + 50);
+    if (!metadataSort(sort)) await Promise.all(page.map(doc => this.readMetadata(doc, false)));
+    return { documents: page, total: documents.length };
+  }
+  /** Refresh a bounded loaded window around a physical path, including pending-to-indexed ID changes. */
+  async browseWindow(tagId: string | null, sort: DocumentSort, directory: string | null, descending: boolean | undefined,
+    options: { issues?: boolean; anchorPath?: string; anchorIndex?: number; offset?: number; limit?: number } = {}) {
+    await this.writes;
+    if (directory !== null) directoryKey(directory);
+    let rows: Array<DocumentSummary | SourceIssueDocument>;
+    if (options.issues) {
+      const issues = this.fileIssues().filter(issue => issue.kind !== 'pending' && insideDirectory(issue.path, directory));
+      rows = issues.map(issue => this.issueDocument(issue));
+      if (metadataSort(sort)) rows = await this.orderMetadata(rows, sort, descending);
+      else rows.sort((a, b) => (descending ? -1 : 1) * compareNames(this.relativeFile(a.path), this.relativeFile(b.path)) || a.id.localeCompare(b.id));
+    } else rows = await this.browseOrder(sort, directory, descending, false, tagId);
+    const limit = Math.max(50, Math.min(500, Math.floor(options.limit ?? 50) || 50));
+    const anchor = options.anchorPath ? rows.findIndex(doc => this.fileKey(doc.path) === this.fileKey(options.anchorPath!)) : -1;
+    const offset = Math.max(0, Math.min(Math.max(0, rows.length - (anchor < 0 ? limit : 1)), anchor < 0 ? Math.floor(options.offset ?? 0) || 0 : anchor - Math.max(0, Math.min(limit - 1, Math.floor(options.anchorIndex ?? 0) || 0))));
+    const documents = this.hydrate(rows.slice(offset, offset + limit)) as Array<DocumentSummary | SourceIssueDocument>;
+    if (!metadataSort(sort)) await Promise.all(documents.map(doc => this.readMetadata(doc, false)));
+    return { documents, total: rows.length, offset };
   }
   async page(tagId: string | null, sort: DocumentSort, offset: number, limit = 50, directory: string | null = null, descending?: boolean): Promise<{ documents: DocumentSummary[]; total: number }> {
     await this.writes;
@@ -446,6 +589,7 @@ export class KnowledgeStore {
     }
     try {
       const { assertSourcePath } = await import('./source-directory.js');
+      await this.assertSourceAvailable();
       await assertSourcePath(this.directoryRoot, document.path);
       const info = await stat(document.path); this.rememberMetadata(document, info.isFile() ? info : null);
     } catch { this.rememberMetadata(document, null); }
@@ -457,7 +601,7 @@ export class KnowledgeStore {
     return rows.sort((a, b) => {
       const first = a[key], second = b[key];
       if (first == null || second == null) return first == null && second == null ? a.id.localeCompare(b.id) : first == null ? 1 : -1;
-      const comparison = typeof first === 'number' && typeof second === 'number' ? first - second : String(first).localeCompare(String(second), 'en', { sensitivity: 'base' });
+      const comparison = typeof first === 'number' && typeof second === 'number' ? first - second : compareNames(String(first), String(second));
       return (reverse ? -comparison : comparison) || a.id.localeCompare(b.id);
     });
   }
@@ -676,6 +820,11 @@ export class KnowledgeStore {
     const text = reusable ? '' : (await readContent(path, extension, this.cachePath, this.progress)).slice(0, MAX_TEXT);
     const chunks = reusable ? [] : chunkText(text);
     if (!reusable && !chunks.length) throw new IndexSkipError(IMAGE.has(extension) ? 'image_no_text' : 'no_text');
+    const vectors: number[][] = [];
+    for (const [index, part] of chunks.entries()) {
+      if (index % 16 === 0) await new Promise<void>(done => setImmediate(done));
+      vectors.push(vectorize(part));
+    }
     if (await hashFile(path) !== hash) throw new Error('Source changed during indexing; scan again.');
     return this.locked(async () => {
       this.assertTag(tagId);
@@ -687,7 +836,7 @@ export class KnowledgeStore {
       if (!chunks.length) throw new Error('Source changed during indexing; scan again.');
       const id = stored?.id ?? randomUUID();
       const now = Date.now();
-      const rows: Passage[] = chunks.map((part, chunk) => ({ id: randomUUID(), document_id: id, path: '', name: displayName, hash, indexed_at: now, chunk: chunk + 1, text: part, vector: vectorize(part) }));
+      const rows: Passage[] = chunks.map((part, chunk) => ({ id: randomUUID(), document_id: id, path: '', name: displayName, hash, indexed_at: now, chunk: chunk + 1, text: part, vector: vectors[chunk]! }));
       const db = await this.connection();
       const table = await this.table();
       const target = table ?? await db.createTable(PASSAGES_TABLE, rows);

@@ -20,6 +20,7 @@ The setup page shows three local engines and your source directory together. Sea
 - Otherwise, `.knowledge/` is created for its catalogue, tags and search index.
 - Files stay in their original locations. Switching directories never copies the previous library into the next one.
 - Downloadable engines remain in Finch’s local cache, not your source directory.
+- On Windows, creating or opening a local library automatically marks its `.knowledge/` folder as Hidden, without changing source files or their attributes. macOS/Linux already hide dot-prefixed folders. File managers can still show it when **Show hidden items** is enabled; an attribute-permission failure does not prevent indexing.
 
 Each time a directory is opened, Knowledge Base checks it in the background: new files are indexed, changed files are refreshed, and confirmed missing files are removed from the index. Files that cannot be read, or whose parent directory is unavailable, keep their previous indexes and are reported. Hidden files, symbolic links and `.knowledge/` are skipped.
 
@@ -40,13 +41,15 @@ The share must already be mounted and readable; this tool does not log in, mount
 ## Use your documents
 
 - Manage source files in your system file manager. Use **Open source folder** to get there, then **Scan and update** to reconcile indexes.
+- Scanning is progressive: discovered files appear as **Pending**, smaller files are processed first, and each committed file is searchable immediately. The list refreshes in batches without clearing it or resetting your reading position. Existing searchable versions stay available until a replacement commits. While scanning, the same button becomes **Pause indexing**: it stops after the current file, keeps completed work, and stays paused across restarts. Click **Scan and update** to continue; unchanged committed files reuse their indexes. Pending files count toward source totals, not the issue filter. Closing the view does not stop a scan. PDF/image extraction is unchanged in this release.
 - Knowledge Base manages indexes and tags, never original files: it cannot import copies, save web pages, create Markdown, rename, move, delete or back up source files.
-- Browse **Source folders** at the top of the sidebar. Only folders containing indexed documents appear; selecting one includes its subfolders and scopes browsing and search.
+- Browse **Source folders** at the top of the sidebar. After scanning, the tree mirrors the source structure, including empty folders and folders containing only unsupported files; private/hidden and system folders remain excluded. Counts show unique files, including unsupported and failed files, not index records or exception counts. All sources includes files directly in the root folder. The issue filter is a subset, not an extra folder to add to the total. Selecting a folder includes its subfolders; search still uses only searchable indexed content.
+- Choose **Not indexed / issues** in the sidebar to see unsupported formats, empty files, unrecognized images and processing failures—even files that never had an index. This built-in filter is a peer of the top-level source folders and is mutually exclusive with directory and tag selections. Reasons appear on one line in the existing **Index status** column; long text is truncated, with the full reason available on hover. Row heights remain unchanged. Scan again after fixing a file; resolved or confirmed removed entries disappear automatically. Unavailable subtrees keep their last known records.
 - **Tags** live below the folders. Only user-created tags appear here. Hovering or focusing a tag replaces its count with rename/delete actions without shifting the label. Apply one or more tags from the **Tags** context submenu; its checkboxes stay open without instructional text. For files, choose **Tags → New tag** from the context menu; creating a tag is never a separate top-level file action. The tag section also has a right-click creation shortcut. Context menus and tag submenus open to the right by default and flip left near the window edge. Click the dot before a tag to open its color plane and hue strip directly—no hover-only color button, large preview, or second popup. HEX input and presets stay synchronized; cancel leaves the tag unchanged, and Default restores gray. Tags do not move files or duplicate their search indexes.
 - Search a tag with the magnifier, or use the book button in chat to draft a question for your assistant.
 - Ask the assistant to index a new file or scan the directory after edits. Tool paths are relative to the selected knowledge directory, not the chat’s working directory.
 
-The directory is the source of truth. Scanning follows moved folders, removes confirmed obsolete paths, and repairs duplicate old/new mappings. Uniquely identifiable moved files keep their document IDs and tags. Unreadable locations remain indexed until absence can be confirmed. Empty files and sources without searchable text are skipped silently. Original files are never changed.
+The directory is the source of truth. Scanning follows moved folders, removes confirmed obsolete paths, and repairs duplicate old/new mappings. Uniquely identifiable moved files keep their document IDs and tags. Unreadable locations remain indexed until absence can be confirmed. Empty files and sources without searchable text stay out of the search index; their reasons remain available in **Not indexed / issues**, without exception toasts. Original files are never changed.
 
 Drag the boundary between the sidebar and document list to resize the sidebar between **220 and 420 px**. The two panes have a compact **8 px** gap; the resize guide disappears immediately after release, even when the pointer stays over it. Your width is remembered; double-click resets it, and arrow keys also resize. Smaller windows tighten the upper limit to preserve room for documents; narrow views stack vertically.
 
@@ -110,6 +113,7 @@ npx @finchtoys/minitools add finch-knowledge
 - 没有 `.knowledge/`：创建它，用来保存数据库、标签和检索索引。
 - 文件保持原位；切换目录不会把旧库复制进新目录。
 - 引擎下载缓存留在 Finch 本机数据目录，不放进资料目录。
+- Windows 创建或打开本地知识库时，自动为 `.knowledge/` 文件夹补上「隐藏」属性，不修改原文件或原文件的属性；macOS/Linux 的点号目录本就默认隐藏。文件管理器开启「显示隐藏的项目」后仍能看到；无权设置隐藏属性时不影响索引使用。
 
 每次打开目录，会在后台增量核对：新增文件入索引，修改文件更新索引，确认删除的文件清理索引。文件暂不可读或父目录不可用时保留旧索引，避免误删。跳过隐藏文件、符号链接和 `.knowledge/`。
 
@@ -130,13 +134,15 @@ npx @finchtoys/minitools add finch-knowledge
 ## 使用资料
 
 - 在系统文件管理器中管理原文件；顶部 **打开资料目录** 可直达原目录，完成后点 **扫描更新**。
+- 索引渐进完成：文件清单先显示 **待索引**，优先处理小文件，每完成一份即可检索；列表按小批次更新，不先清空，也不把阅读位置拉回顶部。更新时旧的可检索版本保留到新版本提交。扫描期间原按钮变为 **暂停索引**：当前文件处理完后停下，保留已完成进度，重启后仍保持暂停；再点 **扫描更新** 继续，已完成且未变化的文件复用索引。待处理文件计入文件总数，但不计入异常筛选；关闭页面不停止扫描。本次不改 PDF／图片的文字提取方式。
 - 知识库只管理索引与标签，不管理原文件；不提供复制导入、保存网页、新建 Markdown、改名、移动、删除原件或复制备份入口。
-- 左侧上方是 **资料目录**：仅显示已有索引的目录，选中后浏览和搜索包含其子目录，不展示空目录或尚未索引的目录。
+- 左侧上方是 **资料目录**：扫描后按源端结构展示，包含空目录、只有不支持文件的目录；私有、隐藏及系统目录仍排除。数字为按路径去重的文件数，包含不支持及处理失败的文件，不是索引条数或异常次数。「全部资料」还包含根目录中的文件；异常筛选是子集，不额外加到总数。选中目录包含其子目录，搜索仍只检索已有可用索引的内容。
+- 点侧栏 **未索引／异常**，可查看不支持格式、空文件、图片未识别出文字及处理失败的文件，首次索引失败的文件也会保留记录。它是与一级子目录同级的内置筛选项，与目录、标签选择互斥，不会同时高亮。原因在现有 **索引状态** 列单行显示，过长省略，悬停查看完整原因，不撑高行。处理后重新扫描，已恢复或确认删除的项会自动消失；暂不可访问的子目录保留上次记录。
 - 下方的 **标签** 仅显示用户创建的标签，不显示系统占位标签；未打标签的资料仍在「全部资料」中。悬停或键盘聚焦标签时，计数由编辑/删除按钮替换，名称和行宽保持不变。在右键菜单的 **标签** 中独立勾选或取消，菜单保持打开，不再显示多选说明。文件右键菜单中通过 **标签 → 新建标签** 创建，外层不再单列入口；标签区右键也可新建标签。右键菜单和标签子菜单默认向右展开，靠近窗口右边缘时自动向左。点标签名前的色点直接打开色板与色相条，不用悬停找颜色按钮，也没有大块预览或第二层弹窗；HEX 与预设颜色同步，取消不改动标签，默认可恢复灰色；一份资料可带多个标签，不移动文件、不复制索引。
 - 用放大镜检索当前标签，或用对话工具栏的书本按钮编辑提问模板。
 - 可以请 AI 索引新文件，或在编辑后扫描目录。工具的相对路径以知识库目录为根，不以当前聊天工作目录为根。
 
-目录实际内容是唯一依据。扫描会跟随目录移动，清理确认消失的旧路径，并修复新旧路径重复计数；可唯一识别的移动保留索引标识和标签。无法访问时保留映射，待可确认后再清理。空文件、图片未识别到文字、没有可检索文字会静默跳过；原文件始终不变。
+目录实际内容是唯一依据。扫描会跟随目录移动，清理确认消失的旧路径，并修复新旧路径重复计数；可唯一识别的移动保留索引标识和标签。无法访问时保留映射，待可确认后再清理。空文件、图片未识别到文字、没有可检索文字不进入检索索引，原因保留在「未索引／异常」列表，不弹异常气泡；原文件始终不变。
 
 左右栏之间可拖动调整左栏宽度，范围为 **220–420px**，两栏间距为 **8px**，松手后分隔线立即隐藏，即使鼠标仍停在原处。会记住调整结果；双击恢复默认，也可用左右方向键调整。窗口较小时会自动收紧上限，为右侧资料列表保留空间；窄窗口保持上下排列。
 

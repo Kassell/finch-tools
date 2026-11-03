@@ -25,7 +25,7 @@ function fixture(locale = 'en-US') {
   runInContext(code, context);
   context.ui = copies[locale];
   const run = script => runInContext(script, context);
-  run("copy = ui; libraryPath = '/library'; renderDirectories = renderTags = renderDocs = updateLibrary = renderEnvironment = renderEnvironmentMenu = renderOnboardLibrary = renderActivity = setMenu = closeRowMenu = closeTagColor = closeSearch = () => {}; toast = captureToast;");
+  run("copy = ui; libraryPath = '/library'; renderDirectories = renderTags = renderDocs = updateSortSizer = updateLibrary = renderEnvironment = renderEnvironmentMenu = renderOnboardLibrary = renderActivity = setMenu = closeRowMenu = closeTagColor = closeSearch = () => {}; toast = captureToast;");
   return { run, receive, byId, toasts, elements };
 }
 const clean = { updated: [], removed: [], unchanged: 2, unreachable: [], failed: [] };

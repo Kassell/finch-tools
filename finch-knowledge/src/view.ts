@@ -14,23 +14,27 @@ import type { LibraryRecord } from './libraries.js';
 
 type Bridge = finch.WebviewBridgeApi;
 declare global { interface Window { finch: Bridge } }
-interface Document { size_bytes?: number | null; modified_at?: number | null; file_type?: string; id: string; name: string; path: string; tags: string[]; chunks: number; added_at: number; indexed_at: number; indexState?: 'indexed' | 'partial' | 'missing' | 'unavailable'; indexedChunks?: number | null; status?: DocumentState; statusReason?: string }
+interface Document { issueKind?: 'pending' | 'unsupported' | 'failed' | 'empty_file' | 'no_text' | 'image_no_text' | 'unavailable'; size_bytes?: number | null; modified_at?: number | null; file_type?: string; id: string; name: string; path: string; tags: string[]; chunks: number; added_at: number; indexed_at: number; indexState?: 'indexed' | 'partial' | 'missing' | 'unavailable'; indexedChunks?: number | null; status?: DocumentState; statusReason?: string }
 interface Tag { id: string; name: string; count: number; color?: string }
 interface IndexedDirectory { path: string; parent: string | null; name: string; count: number }
 interface Match { document_id: string; name: string; path: string; tag_id: string; chunk: number; text: string; matched?: string[] }
 interface LibraryInfo { indexStorage?: 'source' | 'local'; indexRoot?: string; version?: number; name?: string; activeId?: string; libraries?: LibraryRecord[]; entered?: boolean; selected?: boolean; root: string; isDefault: boolean; documents: number; tags: number; unavailable: string | null }
 interface EnvironmentStep { id: string; status: 'pending' | 'running' | 'ready' | 'failed'; optional?: boolean; lazy?: boolean; message?: string; percent?: number; detail?: string; error?: string }
 interface EnvironmentState { running: boolean; ready: boolean; usable: boolean; steps: EnvironmentStep[]; startedAt?: number; finishedAt?: number }
-interface Reply { type: string; libraryVersion?: number; directories?: IndexedDirectory[]; percent?: number; root?: string; phase?: 'processing' | 'settled'; version?: number; document?: Document; requestId?: string; tags?: Tag[]; tag?: Tag; documents?: Document[]; total?: number; offset?: number; focusId?: string; matches?: Match[]; error?: string; message?: string; unchanged?: number; path?: string; count?: number; missing?: number; library?: LibraryInfo; mode?: string; previousRoot?: string; environment?: EnvironmentState; sessionId?: string; names?: string[]; change?: { kind?: string; documentId?: string; tags?: string[] }; sync?: { updated: string[]; removed: string[]; unchanged: number; unreachable: string[]; failed: Array<{ name: string; reason: string }>; skipped?: Array<{ name: string; reason: string }>; moved?: string[] } }
+interface Reply { paused?: boolean; scanning?: boolean; issuesTotal?: number; type: string; libraryVersion?: number; directories?: IndexedDirectory[]; percent?: number; root?: string; phase?: 'processing' | 'settled'; version?: number; document?: Document; requestId?: string; tags?: Tag[]; tag?: Tag; documents?: Document[]; total?: number; offset?: number; focusId?: string; matches?: Match[]; error?: string; message?: string; unchanged?: number; path?: string; count?: number; missing?: number; library?: LibraryInfo; mode?: string; previousRoot?: string; environment?: EnvironmentState; sessionId?: string; names?: string[]; change?: { kind?: string; documentId?: string; tags?: string[] }; sync?: { paused?: boolean; updated: string[]; removed: string[]; unchanged: number; unreachable: string[]; failed: Array<{ name: string; reason: string }>; skipped?: Array<{ name: string; reason: string }>; moved?: string[] } }
 type Copy = Record<string, string>;
 const english: Copy = {
-  directoriesTitle: 'SOURCE FOLDERS', directoriesHint: 'Indexed folders only; selecting a folder includes its subfolders.', tagColor: 'Tag color',
+  scanPause: 'Pause indexing', scanPauseHint: 'Pause after the current file. Existing indexes remain searchable.', scanPausing: 'Pausing…', scanPaused: 'Indexing paused; completed files remain searchable.',
+  directoriesTitle: 'SOURCE FOLDERS', directoriesHint: 'Counts show unique files, including unsupported and failed files. All sources includes root-level files; issues are a cross-folder filter, not an additional folder.', tagColor: 'Tag color',
+  sourceIssues: 'Not indexed / issues', sourceIssuesEmpty: 'No unindexed or failed files in this scope.', sourceIssuesHint: 'Reasons appear in the Index status column. Originals stay untouched; scan again to retry.',
+  issueUnsupported: 'Unsupported format', issueFailed: 'Cannot parse', issueEmpty: 'Empty file', issueNoText: 'No searchable text', issueImageNoText: 'No text recognized', issueUnavailable: 'Temporarily unavailable',
+  emptyFolderTitle: 'No indexed documents in this folder', emptyFolderHint: 'Empty folders remain visible. Check Not indexed / issues for unsupported or unrecognized files.',
   filterByTag: 'Show sources tagged {tag}', scanIssuesClear: 'Clear notices',
   sortModified: 'Date modified', sortType: 'Type', sortSize: 'Size', columnStatus: 'Index status', fileGeneric: 'File',
   'fileType.md': 'Markdown', 'fileType.txt': 'Text document', 'fileType.doc': 'Word document', 'fileType.docx': 'Word document', 'fileType.pdf': 'PDF document',
   'fileType.png': 'PNG image', 'fileType.jpeg': 'JPEG image', 'fileType.webp': 'WebP image', 'fileType.bmp': 'Bitmap image', 'fileType.tiff': 'TIFF image',
   resizeSidebar: 'Drag to resize the sidebar. Double-click to reset; arrow keys also resize.',
-  directoriesEmpty: 'Indexed folders appear here after scanning.', tagsEmpty: 'No tags yet. Use + to create one.',
+  directoriesEmpty: 'Source folders appear here after scanning.', tagsEmpty: 'No tags yet. Use + to create one.',
   colorPlane: 'Saturation and brightness; arrow keys adjust each axis.', colorHue: 'Hue', colorValue: 'Saturation {s}%, brightness {v}%.',
   colorHint: 'Drag the color plane or hue strip, or enter a HEX value.', colorInvalid: 'Enter a color such as #5393d8.', colorReset: 'Default', colorCancel: 'Cancel', colorSave: 'Save',
   'tagColor.red': 'Red', 'tagColor.orange': 'Orange', 'tagColor.yellow': 'Yellow', 'tagColor.green': 'Green', 'tagColor.blue': 'Blue', 'tagColor.purple': 'Purple', 'tagColor.gray': 'Gray',
@@ -127,6 +131,8 @@ const bridge = window.finch;
 let copy = english;
 let tags: Tag[] = [];
 let docs: Document[] = [];
+let showIssues = false;
+let issuesTotal = 0;
 let selectedTag: string | null = null;
 let selectedDirectory: string | null = null;
 let directories: IndexedDirectory[] = [];
@@ -145,6 +151,7 @@ let pageEpoch = 0;
 let searchEpoch = 0;
 let sequence = 0;
 let scanBusy = false;
+let pauseRequested = false;
 let scanPercent: number | null = null;
 const documentStatusVersions = new Map<string, number>();
 let environment: EnvironmentState | null = null;
@@ -170,7 +177,7 @@ let draggingTag: string | null = null;
 let debounce: number | undefined;
 let searchQuery = '';
 let localeEpoch = 0;
-const pending = new Map<string, { type: string; root?: string; version?: number; epoch: number; mode?: 'replace' | 'append' | 'prepend' | 'locate' }>();
+const pending = new Map<string, { type: string; root?: string; version?: number; epoch: number; mode?: 'replace' | 'append' | 'prepend' | 'locate' | 'refresh' }>();
 function tr(key: string, values?: Record<string, string | number>): string {
   let value = copy[key] ?? english[key] ?? key;
   for (const [token, replacement] of Object.entries(values ?? {})) value = value.replace(`{${token}}`, String(replacement));
@@ -297,7 +304,7 @@ function mountStaticIcons(): void {
     if (iconNode) placeholder.replaceWith(svg(iconNode));
   }
 }
-function request(type: string, payload: Record<string, unknown> = {}, mode?: 'replace' | 'append' | 'prepend' | 'locate'): string {
+function request(type: string, payload: Record<string, unknown> = {}, mode?: 'replace' | 'append' | 'prepend' | 'locate' | 'refresh'): string {
   const requestId = String(++sequence);
   const root = isLibraryScoped(type) && libraryPath ? libraryPath : undefined;
   const version = root && libraryVersion >= 0 ? libraryVersion : undefined;
@@ -310,9 +317,25 @@ function page(offset: number, mode: 'replace' | 'append' | 'prepend' = 'replace'
   loadingPage = true;
   byId('list-end').textContent = tr('loading');
   if (!docs.length) renderDocs();
-  request('page', { tagId: selectedTag, directory: selectedDirectory, sort, descending: currentDescending(), offset }, mode);
+  request('page', { ...(showIssues ? { issues: true } : {}), tagId: selectedTag, directory: selectedDirectory, sort, descending: currentDescending(), offset }, mode);
+}
+let refreshQueued = false;
+function visibleAnchor(): { path?: string; index: number; top: number } {
+  const container = byId('documents-scroll');
+  const edge = container.getBoundingClientRect().top;
+  const row = Array.from(byId('documents').children).find(item => (item as HTMLElement).dataset.path && item.getBoundingClientRect().bottom > edge) as HTMLElement | undefined;
+  return { path: row?.dataset.path, index: row ? Math.max(0, docs.findIndex(doc => doc.path === row.dataset.path)) : 0, top: row ? row.getBoundingClientRect().top - edge : 0 };
+}
+/** Keep the current window visible while a bounded snapshot is fetched in the background. */
+function refreshPage(): void {
+  if (loadingPage) { refreshQueued = true; return; }
+  refreshQueued = false; loadingPage = true;
+  const anchor = visibleAnchor();
+  request('page', { refresh: true, anchorPath: anchor.path, anchorIndex: anchor.index, limit: Math.max(50, docs.length), offset: beforeOffset,
+    ...(showIssues ? { issues: true } : {}), tagId: selectedTag, directory: selectedDirectory, sort, descending: currentDescending() }, 'refresh');
 }
 function resetPage(): void {
+  refreshQueued = false;
   pageEpoch++;
   loadingPage = false;
   docs = []; total = 0; beforeOffset = 0; nextOffset = 0;
@@ -324,9 +347,10 @@ function resetPage(): void {
  * single row instead — the left column still needs its new counts either way.
  */
 function applyTags(next: Tag[], list = true): void {
+  const changed = JSON.stringify(tags.filter(tag => tag.id !== DEFAULT_TAG)) !== JSON.stringify(next.filter(tag => tag.id !== DEFAULT_TAG));
   tags = next;
   if (selectedTag !== null && selectedTag !== DEFAULT_TAG && !tags.some((tag) => tag.id === selectedTag)) selectedTag = null;
-  renderTags();
+  if (list || changed) renderTags();
   if (list) renderDocs();
 }
 function finishTagRename(id: string, previous: string, next?: string, focusChoice = true): void {
@@ -470,14 +494,26 @@ function applyDirectories(next?: IndexedDirectory[]): void {
   renderDirectories();
 }
 function selectTag(id: string | null): void {
-  if (selectedTag === id && selectedDirectory === null) return;
+  if (!showIssues && selectedTag === id && selectedDirectory === null) return;
+  showIssues = false; updateSortSizer();
   closeTagColor(); selectedDirectory = null; selectedTag = id; inlineTagEditing = null;
   renderDirectories(); renderTags(); resetPage(); updateScope();
 }
 function selectDirectory(path: string | null): void {
-  if (selectedDirectory === path && selectedTag === null) return;
+  if (!showIssues && selectedDirectory === path && selectedTag === null) return;
+  showIssues = false; updateSortSizer();
   closeTagColor(); selectedDirectory = path; selectedTag = null; inlineTagEditing = null;
   renderDirectories(); renderTags(); resetPage(); updateScope();
+}
+function selectIssueList(): void {
+  showIssues = true; selectedTag = null; selectedDirectory = null; closeRowMenu(); closeTagColor();
+  if (sort === 'added' || sort === 'updated') { sort = 'name'; sortDescending = undefined; }
+  updateSortSizer();
+  renderDirectories(); renderTags(); resetPage(); updateScope();
+}
+function applyIssueCount(count?: number): void {
+  if (count === undefined || count === issuesTotal) return;
+  issuesTotal = count; renderDirectories();
 }
 function renderDirectories(): void {
   const container = byId('directories');
@@ -487,10 +523,14 @@ function renderDirectories(): void {
   container.title = tr('directoriesHint');
   const heading = byId('directories-title'); heading.textContent = tr('directoriesTitle');
   const all = node('button', 'directory-choice directory-all') as HTMLButtonElement;
-  all.type = 'button'; all.classList.toggle('active', selectedTag === null && selectedDirectory === null);
-  all.setAttribute('aria-pressed', String(selectedTag === null && selectedDirectory === null));
+  all.type = 'button'; all.classList.toggle('active', !showIssues && selectedTag === null && selectedDirectory === null);
+  all.setAttribute('aria-pressed', String(!showIssues && selectedTag === null && selectedDirectory === null));
   all.append(svg(Files), node('span', 'tag-name', tr('all')), node('span', 'tag-count', String(directories.find(item => item.path === '')?.count ?? 0)));
-  all.addEventListener('click', () => selectDirectory(null)); container.append(all);
+  all.addEventListener('click', () => selectTag(null)); container.append(all);
+  const issueChoice = node('button', 'directory-choice directory-issues') as HTMLButtonElement;
+  issueChoice.type = 'button'; issueChoice.classList.toggle('active', showIssues); issueChoice.setAttribute('aria-pressed', String(showIssues));
+  issueChoice.append(svg(CircleAlert), node('span', 'tag-name', tr('sourceIssues')), node('span', 'tag-count', String(issuesTotal)));
+  issueChoice.addEventListener('click', selectIssueList);
   const children = new Map<string, IndexedDirectory[]>();
   for (const entry of directories) if (entry.parent !== null) {
     const group = children.get(entry.parent) ?? []; group.push(entry); children.set(entry.parent, group);
@@ -514,8 +554,8 @@ function renderDirectories(): void {
       });
       const choice = node('button', 'directory-choice') as HTMLButtonElement;
       choice.type = 'button'; choice.title = entry.path;
-      choice.classList.toggle('active', selectedTag === null && selectedDirectory === entry.path);
-      choice.setAttribute('aria-pressed', String(selectedTag === null && selectedDirectory === entry.path));
+      choice.classList.toggle('active', !showIssues && selectedTag === null && selectedDirectory === entry.path);
+      choice.setAttribute('aria-pressed', String(!showIssues && selectedTag === null && selectedDirectory === entry.path));
       choice.append(svg(expanded ? FolderOpen : Folder), node('span', 'tag-name', entry.name), node('span', 'tag-count', String(entry.count)));
       choice.addEventListener('click', () => selectDirectory(entry.path));
       row.append(toggle, choice); item.append(row);
@@ -524,7 +564,11 @@ function renderDirectories(): void {
     }
     return list;
   };
-  container.append(branch(''));
+  const rootList = branch('');
+  const builtin = node('li', 'directory-item directory-builtin'), builtinRow = node('div', 'directory-row');
+  const spacer = node('span', 'directory-toggle'); spacer.setAttribute('aria-hidden', 'true');
+  builtinRow.append(spacer, issueChoice); builtin.append(builtinRow); rootList.append(builtin);
+  container.append(rootList);
   if (!children.size) container.append(node('p', 'side-empty', tr('directoriesEmpty')));
   container.scrollTop = scroll;
 }
@@ -674,14 +718,17 @@ function renderTags(): void {
   updateScope();
 }
 function updateScope(): void {
-  const target = selectedDirectory ?? tagName(selectedTag);
+  const target = showIssues ? [selectedDirectory, tr('sourceIssues')].filter(Boolean).join(' · ') : selectedDirectory ?? tagName(selectedTag);
   // With no title and no note above it, the field itself says what a search would cover.
-  (byId('query') as HTMLInputElement).placeholder = tr('searchPlaceholderIn', { tag: target });
+  (byId('query') as HTMLInputElement).placeholder = tr('searchPlaceholderIn', { tag: selectedDirectory ?? tagName(selectedTag) });
   byId('library-title').textContent = target;
   byId('library-title').setAttribute('title', target);
 }
 /** Refresh the themed trigger and menu after a selection or locale change. */
-function updateSortSizer(): void { sortControl?.refresh(); renderColumnHeaders(); }
+function updateSortSizer(): void {
+  sortControl?.refresh(); renderColumnHeaders();
+  for (const item of byId('sort-menu').querySelectorAll<HTMLElement>('[data-sort]')) item.hidden = showIssues && ['added', 'updated'].includes(item.dataset.sort ?? '');
+}
 function sortLabel(value: SortOrder): string { return tr({ updated: 'sortUpdated', added: 'sortAdded', name: 'sortName', modified: 'sortModified', type: 'sortType', size: 'sortSize' }[value]); }
 function renderColumnHeaders(): void {
   byId('document-columns').setAttribute('aria-label', tr('sortLabel'));
@@ -722,9 +769,32 @@ function openDocument(doc: Document): void {
   const reveal = () => request('reveal', { id: doc.id });
   if (!openListedDocument(bridge, doc.name, doc.path, reveal)) reveal();
 }
+/** Non-indexed originals have no tag/preview actions; the reason stays in Index status. */
+function buildIssueRow(doc: Document): HTMLElement {
+  const row = node('div', doc.issueKind === 'pending' ? 'doc pending-doc' : 'doc issue-doc'); row.dataset.id = doc.id; row.dataset.issueKind = doc.issueKind;
+  row.dataset.path = doc.path; row.dataset.signature = rowSignature(doc);
+  row.tabIndex = 0; row.setAttribute('role', 'group');
+  const nameCell = node('div', 'doc-name'), fileIcon = node('span', 'doc-icon');
+  const glyph = node('img', 'doc-icon-image') as HTMLImageElement;
+  glyph.src = new URL(`../icons/${iconForFile(doc.name)}`, location.href).href; glyph.alt = ''; fileIcon.append(glyph);
+  const title = node('span', 'doc-title', doc.name); title.title = doc.path;
+  nameCell.append(fileIcon, title);
+  const key = { pending: 'statusPending', unsupported: 'issueUnsupported', failed: 'issueFailed', empty_file: 'issueEmpty', no_text: 'issueNoText', image_no_text: 'issueImageNoText', unavailable: 'issueUnavailable' }[doc.issueKind!];
+  const reason = [tr(key), doc.statusReason].filter(Boolean).join(' · ');
+  const status = node('span', 'doc-status'); status.dataset.state = doc.issueKind === 'failed' ? 'failed' : 'unverified';
+  status.setAttribute('title', reason); status.setAttribute('aria-label', reason); status.append(svg(doc.issueKind === 'pending' ? Circle : CircleAlert), node('span', '', reason));
+  row.append(nameCell, node('span', 'doc-modified', fileModified(doc.modified_at)), node('span', 'doc-type', fileType(doc)), node('span', 'doc-size', fileSize(doc.size_bytes)), status);
+  row.setAttribute('aria-label', `${doc.name} · ${reason}`); row.title = `${doc.path}\n${reason}`;
+  const reveal = () => request('reveal', { id: doc.id, issues: true });
+  row.addEventListener('dblclick', reveal);
+  row.addEventListener('keydown', event => { if (event.target === row && event.key === 'Enter') { event.preventDefault(); reveal(); } });
+  return row;
+}
 /** Build one row so re-filing never rebuilds the rest of the visible list. */
 function buildRow(doc: Document): HTMLElement {
+  if (doc.issueKind) return buildIssueRow(doc);
   const row = node('div', 'doc'); row.dataset.id = doc.id;
+  row.dataset.path = doc.path; row.dataset.signature = rowSignature(doc);
   row.tabIndex = 0; row.setAttribute('role', 'group');
   const fileIcon = node('span', 'doc-icon');
   const glyph = node('img', 'doc-icon-image') as HTMLImageElement;
@@ -826,7 +896,7 @@ function buildRow(doc: Document): HTMLElement {
   return row;
 }
 function buildEmptyState(): HTMLElement {
-  const mode = scanBusy ? 'scanning' : loadingPage ? 'loading' : selectedTag !== null ? 'category' : 'library';
+  const mode = scanBusy ? 'scanning' : loadingPage ? 'loading' : selectedDirectory !== null ? 'directory' : selectedTag !== null ? 'category' : 'library';
   const section = node('section', 'library-empty');
   section.dataset.mode = mode;
   section.setAttribute('role', 'status');
@@ -835,8 +905,8 @@ function buildEmptyState(): HTMLElement {
   const illustration = node('div', 'empty-illustration');
   illustration.setAttribute('aria-hidden', 'true');
   illustration.append(svg(mode === 'scanning' || mode === 'loading' ? Loader : mode === 'category' ? TagIcon : Files));
-  const titleKey = { library: 'emptyTitle', category: 'emptyCategoryTitle', scanning: 'emptyScanningTitle', loading: 'emptyLoadingTitle' }[mode];
-  const hintKey = { library: 'emptyHint', category: 'emptyCategoryHint', scanning: 'emptyScanningHint', loading: 'emptyLoadingHint' }[mode];
+  const titleKey = { library: 'emptyTitle', directory: 'emptyFolderTitle', category: 'emptyCategoryTitle', scanning: 'emptyScanningTitle', loading: 'emptyLoadingTitle' }[mode];
+  const hintKey = { library: 'emptyHint', directory: 'emptyFolderHint', category: 'emptyCategoryHint', scanning: 'emptyScanningHint', loading: 'emptyLoadingHint' }[mode];
   const heading = node('h3', 'empty-heading', tr(titleKey, { tag: tagName(selectedTag ?? DEFAULT_TAG) }));
   heading.id = 'empty-heading';
   section.append(illustration, heading, node('p', 'empty-description', tr(hintKey)));
@@ -859,18 +929,40 @@ function buildEmptyState(): HTMLElement {
   return section;
 }
 
-function renderDocs(focusId?: string): void {
+function rowSignature(doc: Document): string { return JSON.stringify([doc, doc.tags.map(id => tags.find(tag => tag.id === id))]); }
+function renderDocs(focusId?: string, preserve = false): void {
   // Rows are rebuilt here, so a menu whose document is gone has to close — but one whose document
   // is still listed keeps its place, which is what makes ticking several categories possible.
   const survivor = rowMenuDoc ? docs.find((doc) => doc.id === rowMenuDoc!.id) ?? null : null;
   // A refresh empties the list before refilling it, and that moment is not a reason to forget the
   // menu: hide it, and the next render puts it back on the row it belongs to.
   if (!survivor) { if (docs.length || !rowMenuDoc) closeRowMenu(); else hideRowMenu(); }
+  byId('knowledge-content').classList.toggle('issues-view', showIssues);
   byId('count').textContent = tr('totalFiles', { count: total });
   byId('document-columns').hidden = docs.length === 0;
-  const target = byId('documents'); target.replaceChildren();
-  if (!docs.length) target.append(buildEmptyState());
-  for (const doc of docs) target.append(buildRow(doc));
+  const target = byId('documents');
+  const existing = new Map(preserve ? Array.from(target.children).map(row => [(row as HTMLElement).dataset.path, row as HTMLElement] as const) : []);
+  if (!preserve || !docs.length) target.replaceChildren();
+  if (!docs.length) {
+    if (showIssues) {
+      const empty = node('section', 'library-empty'); empty.setAttribute('role', 'status');
+      empty.append(node('h3', 'empty-heading', tr(loadingPage ? 'emptyLoadingTitle' : 'sourceIssuesEmpty')), node('p', 'empty-description', tr('sourceIssuesHint'))); target.append(empty);
+    } else target.append(buildEmptyState());
+  }
+  const keep = new Set<HTMLElement>();
+  if (preserve && docs.length) {
+    const wanted = new Set(docs.map(doc => doc.path));
+    for (const row of Array.from(target.children)) if (!wanted.has((row as HTMLElement).dataset.path ?? '')) row.remove();
+  }
+  for (const [index, doc] of docs.entries()) {
+    const previous = preserve ? existing.get(doc.path) : undefined;
+    const row = previous && previous.dataset.signature === rowSignature(doc) ? previous : buildRow(doc);
+    keep.add(row);
+    if (previous && previous !== row) previous.replaceWith(row);
+    if (!preserve) target.append(row);
+    else if (target.children[index] !== row) target.insertBefore(row, target.children[index] ?? null);
+  }
+  if (preserve && docs.length) for (const row of Array.from(target.children)) if (!keep.has(row as HTMLElement)) row.remove();
   if (survivor) restoreRowMenu(survivor, rowMenuFlyoutOpen);
   // Only carry a tail line while rows remain; a fully shown list needs no dangling footer.
   byId('list-end').textContent = docs.length && docs.length < total ? tr('loaded', { shown: docs.length, total }) : '';
@@ -1211,6 +1303,7 @@ function moveActiveMatch(delta: number): void {
   setActiveMatch(activeMatch < 0 ? (delta > 0 ? 0 : rows.length - 1) : activeMatch + delta);
 }
 function locateMatch(match: Match): void {
+  showIssues = false; updateSortSizer(); renderDirectories();
   pageEpoch++; loadingPage = false;
   request('locate', { id: match.document_id, tagId: selectedTag, directory: selectedDirectory, sort, descending: currentDescending() }, 'locate');
 }
@@ -1361,11 +1454,11 @@ function applyLibrary(info: LibraryInfo | undefined): boolean {
     closeRowMenu(); closeTagColor(); closeSearch();
     pageEpoch++; loadingPage = false;
     creatingTag = false; inlineTagEditing = null; draggingTag = null;
-    selectedTag = null; selectedDirectory = null;
+    selectedTag = null; selectedDirectory = null; showIssues = false; issuesTotal = 0;
     directories = []; expandedDirectories.clear(); tags = []; docs = [];
     total = 0; beforeOffset = 0; nextOffset = 0;
     documentStatusVersions.clear();
-    renderDirectories(); renderTags(); renderDocs();
+    updateSortSizer(); renderDirectories(); renderTags(); renderDocs();
     setScanBusy(false);
   }
   libraryDefault = info.isDefault;
@@ -1430,8 +1523,13 @@ function renderLibraryChoices(): void {
   }));
 }
 function setMenu(open: boolean): void {
-  if (open) closeRowMenu();
-  (byId('library-menu') as HTMLElement).hidden = !open;
+  const menu = byId('library-menu');
+  if (open) {
+    closeRowMenu();
+    // Escape the workspace clipping boundary, especially in short stacked sidebars.
+    document.body.append(menu); menu.classList.add('library-picker-floating');
+    placeMenu(menu, byId('library-menu-button').getBoundingClientRect());
+  } else menu.hidden = true;
   byId('library-menu-button').setAttribute('aria-expanded', String(open));
 }
 function menuOpen(): boolean { return !(byId('library-menu') as HTMLElement).hidden; }
@@ -1444,15 +1542,18 @@ function setScanBusy(busy: boolean): void {
   }
   scanBusy = busy;
   const button = byId('sync') as HTMLButtonElement;
-  button.disabled = busy || libraryBusy || !libraryPath || Boolean(libraryUnavailable);
+  if (!busy) pauseRequested = false;
+  button.disabled = pauseRequested || libraryBusy || !libraryPath || Boolean(libraryUnavailable);
+  byId('sync-label').textContent = busy ? tr(pauseRequested ? 'scanPausing' : 'scanPause') : tr('syncLabel');
   button.setAttribute('aria-busy', String(busy));
-  button.setAttribute('title', busy ? tr('syncWorking') : tr('syncHint'));
+  button.setAttribute('title', busy ? tr('scanPauseHint') : tr('syncHint'));
   renderActivity();
   if (!docs.length) renderDocs();
 }
 function requestScan(): void {
-  if (libraryBusy || scanBusy || !libraryPath || libraryUnavailable) return;
+  if (libraryBusy || pauseRequested || !libraryPath || libraryUnavailable) return;
   setMenu(false);
+  if (scanBusy) { pauseRequested = true; setScanBusy(true); request('scanPause'); return; }
   setScanBusy(true);
   request('sync');
 }
@@ -1627,12 +1728,19 @@ if (bridge) {
       setScanBusy(false);
       // Manual scans also get a final reply; only that reply owns their completion toast.
       if ([...pending.values()].some(task => task.type === 'sync')) return;
-      toast(tr('syncFinished'), 'success');
+      toast(tr(data.paused ? 'scanPaused' : 'syncFinished'), data.paused ? 'info' : 'success');
       return;
     }
     if (data.type === 'changed') {
       if (data.root && data.root !== libraryPath) return;
+      if (data.issuesTotal !== undefined) applyIssueCount(data.issuesTotal);
       applyDirectories(data.directories);
+      if (data.change?.kind === 'scanBatch') {
+        applyTags(data.tags ?? [], false);
+        refreshPage();
+        if ((byId('search-dialog') as HTMLDialogElement).open && ![...pending.values()].some(task => task.type === 'search')) queueSearch();
+        return;
+      }
       if (data.change?.kind === 'tagColor') {
         const scroll = byId('documents-scroll').scrollTop;
         applyTags(data.tags ?? [], false); renderDocs();
@@ -1647,7 +1755,7 @@ if (bridge) {
         patchTagToggle(String(data.change.documentId ?? ''), data.change.tags ?? []);
         // Catalogue counts also cover changes outside the loaded window. All sources keeps its
         // total: adding/removing a tag cannot add/remove a document (nor may multi-tag counts be summed).
-        if (selectedTag !== null) total = tags.find((tag) => tag.id === selectedTag)?.count ?? total;
+        if (!showIssues && selectedTag !== null) total = tags.find((tag) => tag.id === selectedTag)?.count ?? total;
         byId('count').textContent = tr('totalFiles', { count: total });
         byId('list-end').textContent = docs.length < total ? tr('loaded', { shown: docs.length, total }) : '';
         if ((byId('search-dialog') as HTMLDialogElement).open) queueSearch();
@@ -1675,9 +1783,11 @@ if (bridge) {
     switch (data.type) {
       case 'tags': {
         const changed = applyLibrary(data.library);
+        if (data.issuesTotal !== undefined) applyIssueCount(data.issuesTotal);
         applyDirectories(data.directories);
         applyTags(data.tags ?? []);
         applyEnvironment(data.environment);
+        if (data.scanning !== undefined) setScanBusy(data.scanning);
         if (changed) resetPage();
         break;
       }
@@ -1689,10 +1799,8 @@ if (bridge) {
         break;
       case 'syncDone': {
         setScanBusy(false);
-        const sync = data.sync ?? { updated: [], removed: [], unchanged: 0, unreachable: [], failed: [] };
-        const changed = sync.updated.length + sync.removed.length;
-        toast(tr('syncFinished'), 'success');
-        if (changed || sync.moved?.length) { request('tags'); resetPage(); }
+        toast(tr(data.sync?.paused ? 'scanPaused' : 'syncFinished'), data.sync?.paused ? 'info' : 'success');
+        // The final scanBatch already refreshed the visible window without clearing it.
         break;
       }
       case 'libraryEntered':
@@ -1719,18 +1827,25 @@ if (bridge) {
       case 'tagCreated':
         // The inline row closes itself; an error keeps it open so the name can be fixed.
         creatingTag = false;
-        if (data.tag) { selectedDirectory = null; selectedTag = data.tag.id; tags.push(data.tag); renderDirectories(); renderTags(); resetPage(); }
+        if (data.tag) { showIssues = false; updateSortSizer(); selectedDirectory = null; selectedTag = data.tag.id; tags.push(data.tag); renderDirectories(); renderTags(); resetPage(); }
         break;
       case 'page': {
         const container = byId('documents-scroll');
         const oldHeight = container.scrollHeight;
         const offset = data.offset ?? 0;
         const mode = task.mode ?? 'replace';
-        if (mode === 'replace' || mode === 'locate') { docs = data.documents ?? []; beforeOffset = offset; nextOffset = offset + docs.length; container.scrollTop = 0; }
+        const anchor = mode === 'refresh' ? visibleAnchor() : { path: undefined, index: 0, top: 0 }, scroll = container.scrollTop;
+        if (mode === 'replace' || mode === 'locate' || mode === 'refresh') { docs = data.documents ?? []; beforeOffset = offset; nextOffset = offset + docs.length; if (mode !== 'refresh') container.scrollTop = 0; }
         else if (mode === 'prepend') { docs = [...(data.documents ?? []), ...docs]; beforeOffset = offset; }
         else { docs = [...docs, ...(data.documents ?? [])]; nextOffset = offset + (data.documents?.length ?? 0); }
         total = data.total ?? 0; loadingPage = false;
-        renderDocs(data.focusId);
+        renderDocs(data.focusId, mode === 'refresh');
+        if (mode === 'refresh') {
+          const row = Array.from(byId('documents').children).find(item => (item as HTMLElement).dataset.path === anchor.path);
+          container.scrollTop = scroll;
+          if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.top;
+        }
+        if (refreshQueued) refreshPage();
         if (mode === 'prepend') container.scrollTop += container.scrollHeight - oldHeight;
         if (mode === 'locate') (byId('search-dialog') as HTMLDialogElement).close();
         break;
@@ -1791,6 +1906,7 @@ if (bridge) {
     setLibraryBusy(true);
     request('libraryReveal');
   });
+  window.addEventListener('resize', () => setMenu(false));
   byId('sync').addEventListener('click', requestScan);
   const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files');
   document.addEventListener('dragenter', (event) => { if (isFileDrag(event)) { event.preventDefault(); document.body.classList.add('dragging-file'); } });

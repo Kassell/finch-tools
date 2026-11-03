@@ -37,7 +37,7 @@ function fixture() {
   trigger.getBoundingClientRect = () => trigger.bounds;
   menu.getBoundingClientRect = () => ({ width: 190, height: 120 });
   const items = ['updated', 'added', 'name'].map(value => {
-    const item = element(); item.parent = menu; item.dataset.sort = value; item.label = {};
+    const item = element(); item.hidden = false; item.parent = menu; item.dataset.sort = value; item.label = {};
     item.querySelector = () => item.label;
     return item;
   });
@@ -132,4 +132,14 @@ test('the shipped page uses themed radio menu items, not a native system select'
   assert.match(css, /\.menu\.sort-menu\s*\{[^}]*position:\s*fixed/);
   assert.match(css, /\.menu\s*\{[^}]*background:\s*var\(--finch-bg-elevated/);
   assert.match(css, /\.sort-trigger[^}]*color:\s*var\(--finch-text-primary/);
+});
+
+test('keyboard navigation skips hidden index-only sort options in the issue list', () => {
+  const f = fixture(); f.items[0].hidden = true; f.items[1].hidden = true;
+  f.trigger.emit('keydown', { key: 'ArrowDown' }); assert.equal(f.doc.activeElement, f.items[2]);
+  f.menu.emit('keydown', { key: 'ArrowDown' }); assert.equal(f.doc.activeElement, f.items[2]);
+  f.items[0].emit('click'); assert.deepEqual(f.changes, [], 'hidden options cannot be selected');
+  f.menu.emit('keydown', { key: 'Enter' }); assert.deepEqual(f.changes, ['name']);
+  f.items[0].hidden = false; f.items[1].hidden = false;
+  f.trigger.emit('click'); f.menu.emit('keydown', { key: 'Home' }); assert.equal(f.doc.activeElement, f.items[0]);
 });

@@ -469,7 +469,7 @@ button.doc-tag:focus-visible { outline: 2px solid var(--finch-accent, var(--fall
 .list-end { padding: 14px 20px 18px; color: var(--finch-text-tertiary, var(--fallback-muted)); text-align: center; font-size: 12px; }
 .list-end:empty { display: none; }
 .empty { padding: 52px 22px; color: var(--finch-text-secondary, var(--fallback-muted)); text-align: center; font-size: 13px; }
-.status { position: fixed; right: 16px; top: 16px; left: 16px; z-index: 90; margin: 0 auto; max-width: 680px; }
+.status { pointer-events: none; position: fixed; right: 16px; top: 16px; left: 16px; z-index: 90; margin: 0 auto; max-width: 680px; }
 .status:not(:empty) { padding: 9px 13px; border: 1px solid var(--finch-border, var(--fallback-border)); border-radius: var(--finch-radius-sm, 8px); background: var(--finch-bg-elevated, var(--fallback-panel)); color: var(--finch-text-secondary, var(--fallback-muted)); font-size: 12px; box-shadow: var(--finch-shadow-md, 0 12px 30px #0003); }
 .status.error { color: var(--finch-danger, #bd4343); }
 dialog {
@@ -601,3 +601,16 @@ dialog::backdrop { background: color-mix(in srgb, var(--finch-bg-root, #17221e) 
 @media (prefers-reduced-motion: reduce) {
   :where(.directory-tree, .tag-list, .documents-scroll, .matches, .row-submenu, .sort-menu, .tag-color-picker, .library-list)::-webkit-scrollbar-thumb { transition: none; }
 }
+
+/* The separate issue list shares the existing Index status column, with room for reasons. */
+.directory-issues { width: 100%; }
+.issues-view .column-status, .issues-view .doc-status { width: clamp(100px, 35cqw, 300px); }
+.issue-doc { height: 46px; align-items: center; cursor: default; }
+.issue-doc .doc-status { align-items: center; white-space: nowrap; }
+.issue-doc .doc-status > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.issue-doc .doc-status svg { margin-top: 0; }
+.pending-doc { height: 46px; align-items: center; cursor: default; }
+.issue-doc:hover .doc-status, .issue-doc:focus-within .doc-status, .pending-doc:hover .doc-status, .pending-doc:focus-within .doc-status { opacity: 1; visibility: visible; pointer-events: auto; }
+
+/* Library choices must remain clickable outside a short sidebar's clipping boundary. */
+.library-picker-floating { position: fixed; right: auto; bottom: auto; z-index: 40; width: min(268px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; }

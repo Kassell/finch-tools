@@ -310,7 +310,8 @@ test('indexed folder navigation uses catalogue paths and scopes pages, locating 
   assert.equal(tree.find(item => item.path === '').count, 5);
   assert.equal(tree.find(item => item.path === 'group').count, 2);
   assert.equal(tree.find(item => item.path === 'group/sub').count, 1);
-  assert.ok(!tree.some(item => ['empty', 'unindexed'].includes(item.path)));
+  assert.equal(tree.find(item => item.path === 'empty').count, 0, 'scanned empty folders remain visible');
+  assert.ok(!tree.some(item => item.path === 'unindexed'), 'directories created after the last scan appear on the next scan');
   const page = await store.page(null, 'name', 0, 1, 'group');
   assert.equal(page.total, 2); assert.equal(page.documents.length, 1);
   const second = await store.page(null, 'name', 1, 1, 'group');
@@ -537,4 +538,201 @@ test('real panel reopens and backend reloads respect the cooldown while manual s
   await reopened.receive({ type: 'sync', requestId: 'force-after-reload' });
   assert.equal(reopened.sent.filter(message => message.type === 'scanStarted').length, 1);
   } finally { for (const instance of instances) await instance.dispose(); }
+});
+
+test('source inventory includes empty and unsupported-only folders with reasons outside the searchable index', async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.source, 'empty', 'nested'), { recursive: true });
+  await mkdir(join(f.source, 'unsupported-only'));
+  await mkdir(join(f.source, 'text'));
+  await writeFile(join(f.source, 'unsupported-only', 'archive.zip'), 'Do not parse or alter');
+  await writeFile(join(f.source, 'text', 'empty.txt'), '');
+  await writeFile(join(f.source, 'text', 'spaces.md'), '   \n\t');
+  await writeFile(join(f.source, 'text', 'good.md'), 'Searchable inventory token');
+  const store = await f.open(); const result = await scanSourceDirectory(store);
+  assert.equal(result.failed.length, 0); assert.equal(result.skipped.length, 2);
+  const dirs = await store.directories();
+  for (const path of ['empty', 'empty/nested', 'unsupported-only', 'text']) assert.ok(dirs.some(item => item.path === path), path);
+  assert.equal(dirs.find(item => item.path === 'empty').count, 0);
+  assert.equal(dirs.find(item => item.path === 'text').count, 3, 'folder counts include empty and unrecognized files');
+  assert.equal(await store.fileCount(), 4);
+  assert.equal((await store.browsePage(null, 'name', 0)).total, 4);
+  assert.equal((await store.list()).length, 1);
+  const issues = await store.issuePage('name', 0);
+  assert.equal(issues.total, 3);
+  assert.deepEqual(issues.documents.map(doc => doc.issueKind).sort(), ['empty_file', 'no_text', 'unsupported']);
+  assert.equal((await store.issuePage('name', 0, 'text')).total, 2);
+  assert.equal((await store.issuePage('name', 0, 'empty')).total, 0);
+  assert.equal(await readFile(join(f.source, 'unsupported-only', 'archive.zip'), 'utf8'), 'Do not parse or alter');
+  await store.close(); const reopened = await f.open();
+  assert.deepEqual(await reopened.directories(), dirs);
+  assert.equal(await reopened.issueCount(), 3);
+});
+
+test('unrecognized images and parser errors remain visible even when they never had an index', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.source, 'photo.png'), 'Image fixture'); await writeFile(join(f.source, 'broken.pdf'), 'PDF fixture');
+  const store = await f.open();
+  store.importFile = async path => {
+    if (path.endsWith('.png')) throw new IndexSkipError('image_no_text');
+    throw new Error('Cannot read encrypted PDF');
+  };
+  const result = await scanSourceDirectory(store);
+  assert.equal(result.failed.length, 1); assert.equal(result.skipped.length, 1);
+  const issues = (await store.issuePage('name', 0)).documents;
+  assert.deepEqual(issues.map(doc => doc.issueKind).sort(), ['failed', 'image_no_text']);
+  assert.equal(issues.find(doc => doc.issueKind === 'failed').statusReason, 'Cannot read encrypted PDF');
+  assert.equal((await store.list()).length, 0);
+  assert.equal((await store.sourceIssue(issues[0].id)).path, issues[0].path);
+  await assert.rejects(store.sourceIssue('issue:../escape'), /Invalid/);
+});
+
+test('rescanning clears recovered and removed issues while keeping genuine empty directories', async t => {
+  const f = await fixture(t); await mkdir(join(f.source, 'keep-empty')); await mkdir(join(f.source, 'remove-empty'));
+  await writeFile(join(f.source, 'recover.txt'), ''); await writeFile(join(f.source, 'remove.bin'), 'Unsupported');
+  const store = await f.open(); await scanSourceDirectory(store); assert.equal(await store.issueCount(), 2);
+  await writeFile(join(f.source, 'recover.txt'), 'Recovered searchable text'); await rm(join(f.source, 'remove.bin')); await rm(join(f.source, 'remove-empty'), { recursive: true });
+  await scanSourceDirectory(store);
+  assert.equal(await store.issueCount(), 0); assert.equal((await store.list()).length, 1);
+  const dirs = await store.directories(); assert.ok(dirs.some(item => item.path === 'keep-empty'));
+  assert.equal(dirs.some(item => item.path === 'remove-empty'), false);
+});
+
+test('inventory replacement preserves inaccessible subtrees, and abort or root replacement cannot wipe it', async t => {
+  const f = await fixture(t); await mkdir(join(f.source, 'offline', 'empty'), { recursive: true });
+  await writeFile(join(f.source, 'offline', 'unsupported.bin'), 'Original');
+  const store = await f.open(); await scanSourceDirectory(store); const identity = await stat(f.source, { bigint: true });
+  await store.replaceSourceInventory(['offline', 'fresh'], [{ path: 'offline', kind: 'unavailable', reason: '' }], ['offline'], identity);
+  assert.ok((await store.directories()).some(item => item.path === 'offline/empty'));
+  assert.equal(await store.issueCount(), 1, 'directory-access notices are not files');
+  assert.equal(await store.fileCount(), 1);
+  const before = await store.directories();
+  const controller = new AbortController(); controller.abort();
+  await store.replaceSourceInventory([], [], [], identity, controller.signal);
+  await store.replaceSourceInventory([], [], [], { dev: identity.dev, ino: identity.ino + 1n });
+  assert.deepEqual(await store.directories(), before); assert.equal(await store.issueCount(), 1);
+  await scanSourceDirectory(store); assert.equal(await store.issueCount(), 1);
+  assert.equal((await store.issuePage('name', 0)).documents[0].issueKind, 'unsupported');
+});
+
+test('issue pagination, folder boundaries and library ownership stay isolated', async t => {
+  const f = await fixture(t); await mkdir(join(f.source, 'folder')); await mkdir(join(f.source, 'folder-other'));
+  for (let i = 0; i < 56; i++) await writeFile(join(f.source, 'folder', `${String(i).padStart(2, '0')}.bin`), 'Original');
+  await writeFile(join(f.source, 'folder-other', 'outside.bin'), 'Outside scope');
+  const first = await f.open(); await scanSourceDirectory(first);
+  const page1 = await first.issuePage('name', 0, 'folder'), page2 = await first.issuePage('name', 50, 'folder');
+  assert.equal(page1.total, 56); assert.equal(page1.documents.length, 50); assert.equal(page2.documents.length, 6);
+  assert.equal(new Set([...page1.documents, ...page2.documents].map(doc => doc.id)).size, 56);
+  const secondRoot = join(f.root, 'second'); await mkdir(secondRoot); await mkdir(join(secondRoot, 'second-empty'));
+  const second = await f.open(secondRoot); await scanSourceDirectory(second);
+  assert.equal(await second.issueCount(), 0); assert.equal(await second.sourceIssue(page1.documents[0].id), undefined);
+  assert.equal((await second.directories()).some(item => item.path === 'folder'), false);
+  assert.equal((await first.directories()).some(item => item.path === 'second-empty'), false);
+});
+
+test('file totals count each source path once across indexes, tags and issues, including root files', async t => {
+  const f = await fixture(t); await mkdir(join(f.source, 'group')); await mkdir(join(f.source, 'empty-folder'));
+  const changed = join(f.source, 'group', 'changed.txt');
+  await writeFile(changed, 'Original searchable text'); await writeFile(join(f.source, 'root.md'), 'Root searchable text');
+  await writeFile(join(f.source, 'group', 'unsupported.zip'), 'Original archive'); await writeFile(join(f.source, 'group', 'empty.txt'), '');
+  const store = await f.open(); await scanSourceDirectory(store);
+  const indexed = (await store.list()).find(doc => doc.path === changed);
+  const a = await store.createTag('A'), b = await store.createTag('B'); await store.setTags(indexed.id, [a.id, b.id]);
+  await writeFile(changed, ''); await scanSourceDirectory(store);
+  assert.equal((await store.list()).length, 2, 'old searchable passages are retained');
+  assert.equal(await store.issueCount(), 3, 'one indexed file is also an issue');
+  assert.equal(await store.fileCount(), 4, '2 index rows plus 3 issues still represent only 4 files');
+  const directories = await store.directories();
+  assert.equal(directories.find(item => item.path === '').count, 4);
+  assert.equal(directories.find(item => item.path === 'group').count, 3);
+  assert.equal(directories.find(item => item.path === 'empty-folder').count, 0);
+  for (const sort of ['name', 'added', 'updated', 'modified', 'size', 'type']) {
+    const page = await store.browsePage(null, sort, 0);
+    assert.equal(page.total, 4); assert.equal(new Set(page.documents.map(doc => doc.path)).size, 4);
+    const root = page.documents.find(doc => doc.name === 'root.md');
+    assert.equal(await store.browsePosition(root.id, null, sort), page.documents.indexOf(root));
+    assert.equal((await store.browsePage(null, sort, 0, 50, 'group')).total, 3);
+  }
+  assert.equal((await store.browsePage(a.id, 'name', 0)).total, 1, 'tag membership never duplicates a file');
+  assert.equal((await store.browsePage(b.id, 'name', 0)).total, 1);
+  await writeFile(changed, 'Recovered searchable text'); await rm(join(f.source, 'group', 'unsupported.zip')); await scanSourceDirectory(store);
+  assert.equal(await store.fileCount(), 3); assert.equal(await store.issueCount(), 1);
+  await store.close(); const reopened = await f.open(); assert.equal(await reopened.fileCount(), 3);
+  assert.equal((await reopened.browsePage(null, 'name', 0)).total, 3);
+});
+
+test('all-files browsing pages unsupported files without engines, gaps or duplicate paths', async t => {
+  const f = await fixture(t);
+  for (let i = 0; i < 57; i++) await writeFile(join(f.source, `${String(i).padStart(2, '0')}.bin`), 'Original');
+  const store = await f.open(); await scanSourceDirectory(store);
+  const first = await store.browsePage(null, 'name', 0), last = await store.browsePage(null, 'name', 50);
+  assert.equal(await store.fileCount(), 57); assert.equal(first.total, 57); assert.equal(last.total, 57);
+  assert.equal(first.documents.length, 50); assert.equal(last.documents.length, 7);
+  assert.equal(new Set([...first.documents, ...last.documents].map(doc => doc.path)).size, 57);
+  assert.equal((await readdir(store.root)).includes('vectors.lance'), false, 'counting and browsing do not require a vector engine');
+});
+
+test('Windows counts case variants of a single file once across old index and issue records', { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t); await writeFile(join(f.source, 'one.md'), 'Searchable text');
+  const store = await f.open(); await scanSourceDirectory(store);
+  await store.replaceSourceInventory([], [
+    { path: 'ONE.MD', kind: 'failed', reason: 'Old case variant' },
+    { path: 'one.md', kind: 'failed', reason: 'Latest attempt' },
+    { path: '', kind: 'unavailable', reason: 'Root notice is not a file' },
+  ], [], await stat(f.source, { bigint: true }));
+  assert.equal(await store.fileCount(), 1); assert.equal(await store.issueCount(), 1);
+  assert.equal((await store.browsePage(null, 'name', 0)).total, 1);
+  assert.equal((await store.issuePage('name', 0)).total, 1);
+  assert.equal((await store.directories()).find(item => item.path === '').count, 1);
+});
+
+test('progressive scans expose pending files, then searchable results before the entire batch finishes', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.source, 'a-large.txt'), 'laterkeyword '.repeat(200));
+  await writeFile(join(f.source, 'z-small.txt'), 'earlykeyword');
+  const store = await f.open(); const checkpoints = [];
+  const outcome = await scanSourceDirectory(store, undefined, undefined, { yieldMs: 0, async onCheckpoint(state) {
+    checkpoints.push(state.completed);
+    assert.equal(await store.fileCount(), 2, 'inventory is usable before extraction finishes');
+    assert.equal(await store.issueCount(), 0, 'pending files are not exceptions');
+    if (state.completed === 0) assert.equal((await store.browsePage(null, 'name', 0)).documents.filter(doc => doc.issueKind === 'pending').length, 2);
+    if (state.completed === 1) {
+      assert.equal((await store.search('earlykeyword')).length, 1, 'small file is searchable while the large file is still queued');
+      assert.equal((await store.browsePage(null, 'name', 0)).documents.filter(doc => doc.issueKind === 'pending').length, 1);
+    }
+  } });
+  assert.deepEqual(checkpoints, [0, 1, 2]); assert.equal(outcome.updated.length, 2);
+});
+
+test('stopping between files preserves pending inventory and resumes without rebuilding committed files', async t => {
+  const f = await fixture(t); await writeFile(join(f.source, 'first.txt'), 'firstkeyword'); await writeFile(join(f.source, 'second.txt'), 'secondkeyword extra');
+  const store = await f.open(); const controller = new AbortController();
+  const stopped = await scanSourceDirectory(store, undefined, controller.signal, { yieldMs: 0, onCheckpoint(state) { if (state.completed === 1) controller.abort(); } });
+  assert.equal(stopped.updated.length, 1); assert.equal(await store.fileCount(), 2);
+  assert.equal((await store.search('firstkeyword')).length, 1);
+  await store.close(); const reopened = await f.open();
+  assert.equal((await reopened.browsePage(null, 'name', 0)).documents.filter(doc => doc.issueKind === 'pending').length, 1);
+  const resumed = await scanSourceDirectory(reopened, undefined, undefined, { yieldMs: 0 });
+  assert.equal(resumed.unchanged, 1); assert.equal(resumed.updated.length, 1); assert.equal(await reopened.issueCount(), 0);
+  assert.equal((await reopened.search('secondkeyword')).length, 1);
+});
+
+test('background window refresh anchors a pending file by path after its ID changes and keeps filters scoped', async t => {
+  const f = await fixture(t); for (let i = 0; i < 70; i++) await writeFile(join(f.source, `${String(i).padStart(2, '0')}.txt`), `keyword${i}`);
+  const store = await f.open(); const controller = new AbortController();
+  await scanSourceDirectory(store, undefined, controller.signal, { onCheckpoint(state) { if (!state.completed) controller.abort(); } });
+  const anchorPath = join(f.source, '35.txt');
+  const before = await store.browseWindow(null, 'name', null, false, { anchorPath, anchorIndex: 10 });
+  assert.equal(before.offset, 25); assert.equal(before.documents[10].path, anchorPath); assert.equal(before.documents[10].issueKind, 'pending');
+  const indexed = await store.importFile(anchorPath); await store.settleSourceFile('35.txt', null, await stat(f.source, { bigint: true }));
+  await writeFile(join(f.source, '00-first.txt'), 'earlierkeyword'); await store.importFile(join(f.source, '00-first.txt'));
+  const after = await store.browseWindow(null, 'name', null, false, { anchorPath, anchorIndex: 10, limit: 60 });
+  assert.equal(after.documents[10].id, indexed.document.id); assert.equal(after.offset, 26); assert.equal(after.total, 71);
+  assert.equal((await store.browseWindow(null, 'name', null, false, { issues: true })).total, 0, 'queued files never leak into the issue filter');
+  const tag = await store.createTag('Only selected'); await store.setTags(indexed.document.id, [tag.id]);
+  assert.equal((await store.browseWindow(tag.id, 'name', null, false)).total, 1);
+  assert.equal((await store.browseWindow(null, 'name', 'absent', false)).total, 0);
+  const identity = await stat(f.source, { bigint: true });
+  assert.equal(await store.settleSourceFile('36.txt', null, { dev: identity.dev, ino: identity.ino + 1n }), false);
+  assert.equal((await store.sourceIssue('issue:36.txt')).issueKind, 'pending', 'remapped roots cannot settle old work');
 });

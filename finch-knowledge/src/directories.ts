@@ -11,8 +11,8 @@ export function directoryKey(path: string): string {
 export function insideDirectory(relativePath: string, directory: string | null): boolean {
   return directory === null || relativePath.startsWith(`${directoryKey(directory)}/`);
 }
-/** Build only from committed catalogue paths; empty and unindexed folders do not appear. */
-export function indexedDirectories(paths: string[]): IndexedDirectory[] {
+/** Merge source folders (including empty ones) with committed index paths and index counts. */
+export function indexedDirectories(paths: string[], folders: string[] = []): IndexedDirectory[] {
   const root: IndexedDirectory = { path: '', parent: null, name: '', count: paths.length };
   const entries = new Map<string, IndexedDirectory>([['', root]]);
   for (const path of paths) {
@@ -24,6 +24,14 @@ export function indexedDirectories(paths: string[]): IndexedDirectory[] {
       entry.count++;
       entries.set(current, entry);
       parent = current;
+    }
+  }
+  for (const folder of folders) {
+    let parent = '';
+    for (const name of directoryKey(folder).split('/')) {
+      const path = parent ? `${parent}/${name}` : name;
+      if (!entries.has(path)) entries.set(path, { path, parent, name, count: 0 });
+      parent = path;
     }
   }
   return [...entries.values()].sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));

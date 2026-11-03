@@ -38,10 +38,12 @@ function fixture(platform = 'win32') {
     list: async () => [...docs.values()],
     document: async id => docs.get(id),
     relocateSource: async () => undefined,
+    replaceSourceInventory: async (folders, issues, blocked) => { store.inventory = { folders, issues, blocked }; },
     importFile: async path => { imported.push(path); return { unchanged: true }; },
+    settleSourceFile: async () => true,
     remove: async id => { docs.delete(id); vectors.delete(id); removed.push(id); return true; },
   };
-  const context = createContext({ ...paths, process: { platform }, ACCEPTED: ['.md', '.txt', '.pdf'], DEFAULT_TAG: 'default', INDEX_DIRECTORY: '.knowledge', IndexSkipError: class extends Error {},
+  const context = createContext({ ...paths, setTimeout, clearTimeout, setImmediate, process: { platform }, ACCEPTED: ['.md', '.txt', '.pdf'], DEFAULT_TAG: 'default', INDEX_DIRECTORY: '.knowledge', IndexSkipError: class extends Error {},
     stat: lookup, lstat: lookup,
     readdir: async path => {
       readDirectories.push(path);

@@ -21,18 +21,20 @@ function fixture() {
   return { element, sent, run };
 }
 
-test('the primary manual scan reports busy state and prevents duplicate requests', () => {
+test('the primary scan offers graceful pause without duplicate scan or pause requests', () => {
   const f = fixture();
   f.run('requestScan(); requestScan();');
-  assert.equal(f.sent.length, 1);
-  assert.equal(f.sent[0].type, 'sync');
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.sent[0].type, 'sync'); assert.equal(f.sent[1].type, 'scanPause');
+  assert.equal(f.sent[1].libraryRoot, '/library');
+  f.run('requestScan();'); assert.equal(f.sent.length, 2, 'pause stays disabled until the current file settles');
   assert.equal(f.element('library-menu').hidden, true);
   assert.equal(f.element('sync').disabled, true);
   assert.equal(f.element('sync').attrs['aria-busy'], 'true');
   f.run('setScanBusy(false);');
   assert.equal(f.element('sync').disabled, false);
   f.run('requestScan();');
-  assert.equal(f.sent.length, 2);
+  assert.equal(f.sent.length, 3);
 });
 
 test('scanning is unavailable without a selected accessible directory or during directory operations', () => {

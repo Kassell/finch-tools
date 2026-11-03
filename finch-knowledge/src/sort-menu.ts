@@ -11,6 +11,7 @@ export function createSortMenu(options: {
   const viewport = doc.defaultView!;
   const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('[data-sort]'));
   const listeners: Array<() => void> = [];
+  const availableItems = () => items.filter(item => !item.hidden && !item.disabled);
   function listen(target: EventTarget, type: string, handler: EventListener, capture = false) {
     target.addEventListener(type, handler, capture);
     listeners.push(() => target.removeEventListener(type, handler, capture));
@@ -41,9 +42,11 @@ export function createSortMenu(options: {
     const top = below + popup.height <= viewport.innerHeight - 8 ? below : Math.max(8, anchor.top - popup.height - 6);
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
-    (last ? items.at(-1) : items.find(item => item.dataset.sort === options.getValue()) ?? items[0])?.focus();
+    const choices = availableItems();
+    (last ? choices.at(-1) : choices.find(item => item.dataset.sort === options.getValue()) ?? choices[0])?.focus();
   }
   function choose(item: HTMLButtonElement) {
+    if (item.hidden || item.disabled) return;
     const value = item.dataset.sort as SortOrder;
     const changed = value !== options.getValue();
     close(true);
@@ -62,21 +65,23 @@ export function createSortMenu(options: {
   for (const item of items) listen(item, 'click', event => { event.stopPropagation(); choose(item); });
   listen(menu, 'keydown', raw => {
     const event = raw as KeyboardEvent;
-    const current = items.findIndex(item => item === doc.activeElement);
+    const choices = availableItems();
+    if (!choices.length) return;
+    const current = choices.findIndex(item => item === doc.activeElement);
     if (event.key === 'Escape' || event.key === 'Tab') {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
       close(true); return;
     }
     if ((event.key === 'Enter' || event.key === ' ') && current >= 0) {
-      event.preventDefault(); choose(items[current]!); return;
+      event.preventDefault(); choose(choices[current]!); return;
     }
     let next = current;
-    if (event.key === 'ArrowDown') next = (current + 1) % items.length;
-    else if (event.key === 'ArrowUp') next = (current - 1 + items.length) % items.length;
+    if (event.key === 'ArrowDown') next = (current + 1) % choices.length;
+    else if (event.key === 'ArrowUp') next = (current - 1 + choices.length) % choices.length;
     else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = items.length - 1;
+    else if (event.key === 'End') next = choices.length - 1;
     else return;
-    event.preventDefault(); items[next]?.focus();
+    event.preventDefault(); choices[next]?.focus();
   });
   listen(doc, 'pointerdown', event => {
     if (!menu.hidden && !trigger.contains(event.target as Node) && !menu.contains(event.target as Node)) close();

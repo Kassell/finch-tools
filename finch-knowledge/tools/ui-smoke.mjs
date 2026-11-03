@@ -49,6 +49,12 @@ function fixture() {
   let tags = [{ id: 'a', name: '工作', color: 'blue' }, { id: 'b', name: '收藏', color: 'purple' }, { id: 'c', name: '重要', color: 'red' }];
   let docs = ['unassigned.md', 'tagged.md'].map((name, index) => ({ id: String(index), path: `/library/notes/${name}`, name: `notes/${name}`, tags: index ? ['a', 'b'] : [], status: 'ready', chunks: 1, indexedChunks: 1, added_at: 1, indexed_at: 1, size_bytes: index ? 1024 : 0, modified_at: Date.UTC(2020 + index, 0, 1), file_type: 'md' }));
   let directories = [{ path: '', parent: null, name: '', count: 2 }, { path: 'notes', parent: '', name: 'notes', count: 2 }, { path: 'notes/sub', parent: 'notes', name: 'sub', count: 1 }];
+  let inventoryVisible = false;
+  const issues = [
+    { name: 'archive.zip', path: '/library/unsupported-only/archive.zip', issueKind: 'unsupported', statusReason: '' },
+    { name: 'empty.txt', path: '/library/notes/empty.txt', issueKind: 'empty_file', statusReason: '' },
+    { name: 'broken.pdf', path: '/library/notes/broken.pdf', issueKind: 'failed', statusReason: 'Encrypted PDF fixture; scanned document has no extractable text and requires OCR. '.repeat(4) },
+  ].map(doc => ({ ...docs[0], ...doc, id: `issue:${doc.name}`, tags: [] }));
   const libraries = [{ id: 'work', root: '/library', name: '工作资料' }, { id: 'personal', root: '/personal', name: '个人资料' }, { id: 'offline', root: '/offline', name: '离线资料' }];
   let current = libraries[0], libraryVersion = 1;
   const stores = new Map([['work', { tags, docs, directories }], ['personal', {
@@ -60,6 +66,27 @@ function fixture() {
   const allTags = () => [{ id: 'default', name: '', count: docs.filter(doc => !doc.tags.length).length }, ...tags.map(tag => ({ ...tag, count: docs.filter(doc => doc.tags.includes(tag.id)).length }))];
   const emit = message => listener?.(JSON.parse(JSON.stringify({ root: current.root, libraryVersion, ...message })));
   window.testEmit = emit;
+  window.testInventory = () => {
+    inventoryVisible = true;
+    docs.push({ ...docs[0], id: 'root-file', name: 'root.md', path: '/library/root.md' });
+    directories.splice(0, directories.length, { path: '', parent: null, name: '', count: 6 }, { path: 'notes', parent: '', name: 'notes', count: 4 },
+      { path: 'empty', parent: '', name: 'empty', count: 0 }, { path: 'empty/nested', parent: 'empty', name: 'nested', count: 0 }, { path: 'unsupported-only', parent: '', name: 'unsupported-only', count: 1 });
+    emit({ type: 'changed', tags: allTags(), directories, issuesTotal: issues.length });
+  };
+  let progressiveOriginal;
+  window.testProgressive = stage => {
+    if (stage === 'seed') {
+      progressiveOriginal = docs.slice();
+      docs.push(...Array.from({ length: 120 }, (_, i) => ({ ...docs[0], id: `queued-${i}`, name: `queued-${String(i).padStart(3, '0')}.txt`, path: `/library/notes/queued-${String(i).padStart(3, '0')}.txt`, tags: [], chunks: 0, issueKind: 'pending', statusReason: '' })));
+      emit({ type: 'scanStarted' });
+    } else if (stage === 'complete') {
+      const item = docs.find(doc => doc.path === window.progressiveTarget);
+      delete item.issueKind; delete item.statusReason; item.id = 'committed-file'; item.status = 'ready'; item.chunks = 1;
+    } else if (stage === 'insert') docs.push({ ...progressiveOriginal[0], id: 'earlier-file', name: '000-first.md', path: '/library/notes/000-first.md', tags: [] });
+    else if (stage === 'restore') { docs.splice(0, docs.length, ...progressiveOriginal); directories.splice(0, directories.length, { path: '', parent: null, name: '', count: 2 }, { path: 'notes', parent: '', name: 'notes', count: 2 }); emit({ type: 'changed', tags: allTags(), directories, issuesTotal: 0 }); return; }
+    directories.splice(0, directories.length, { path: '', parent: null, name: '', count: docs.length }, { path: 'notes', parent: '', name: 'notes', count: docs.length });
+    emit({ type: 'changed', tags: allTags(), directories, issuesTotal: 0, change: { kind: 'scanBatch' } });
+  };
   window.testToasts = []; window.testColors = []; window.testRequests = []; window.testPreviews = [];
   window.testDensity = mode => {
     tags.splice(0, tags.length, ...(mode === 'many' ? Array.from({ length: 80 }, (_, i) => ({ id: `t${i}`, name: `标签 ${i}`, color: 'gray' })) : []));
@@ -84,17 +111,23 @@ function fixture() {
           emit({ type: 'libraryDone', mode: 'switch', requestId: message.requestId, library: libraryInfo() });
         } else if (message.type === 'ready' || message.type === 'tags') {
           if (message.type === 'ready') emit({ type: 'finch:env', locale: 'zh-CN', view: 'appView' });
-          emit({ type: 'tags', requestId: message.requestId, tags: allTags(), directories,
+          emit({ type: 'tags', requestId: message.requestId, tags: allTags(), directories, issuesTotal: current.id === 'work' && inventoryVisible ? issues.length : 0,
             library: libraryInfo(),
             environment: { ready: true, usable: true, running: false, steps: ['lancedb', 'anydoc', 'ocr'].map(id => ({ id, status: 'ready' })) } });
         } else if (message.type === 'page') {
-          const ordered = docs.filter(doc => !message.tagId || (message.tagId === 'default' ? !doc.tags.length : doc.tags.includes(message.tagId)));
+          const extra = current.id === 'work' && inventoryVisible ? issues : [];
+          const sources = message.issues ? extra : message.tagId ? docs : [...new Map([...extra, ...docs].map(doc => [doc.path, doc])).values()];
+          const ordered = sources.filter(doc => (!message.directory || doc.path.startsWith(`${current.root}/${message.directory}/`)) && (!message.tagId || (message.tagId === 'default' ? !doc.tags.length : doc.tags.includes(message.tagId))));
           if (['name', 'modified', 'size', 'type'].includes(message.sort)) ordered.sort((a,b) => {
             const key = {name:'name', modified:'modified_at', size:'size_bytes', type:'file_type'}[message.sort];
             const comparison = typeof a[key] === 'number' ? a[key] - b[key] : String(a[key]).localeCompare(String(b[key]));
             return message.descending ? -comparison : comparison;
           });
-          emit({ type: 'page', requestId: message.requestId, documents: ordered, total: ordered.length, offset: 0 });
+          const anchor = message.refresh ? ordered.findIndex(doc => doc.path === message.anchorPath) : -1;
+          const offset = Math.max(0, anchor < 0 ? Number(message.offset ?? 0) : anchor - Number(message.anchorIndex ?? 0));
+          emit({ type: 'page', requestId: message.requestId, documents: ordered.slice(offset, offset + (message.refresh ? Math.min(500, message.limit ?? 50) : 50)), total: ordered.length, offset });
+        } else if (message.type === 'scanPause') {
+          emit({ type: 'scanPauseRequested', requestId: message.requestId }); emit({ type: 'scanDone', paused: true });
         } else if (message.type === 'search') emit({ type:'matches', requestId:message.requestId, matches:[] });
         else if (message.type === 'tagToggle') {
           const doc = docs.find(doc => doc.id === message.id);
@@ -179,6 +212,8 @@ try {
     await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }); return point;
   };
   const click = async selector => {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',inline:'nearest'})`);
+    await evaluate('new Promise(resolve => requestAnimationFrame(resolve))');
     const point = await moveTo(selector);
     await call('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
     await call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
@@ -531,7 +566,13 @@ try {
   // Library switching is intentionally a small picker, with no rename/remove controls.
   const chooseLibrary = async id => {
     await click('#library-menu-button');
-    await click(`[data-library-id="${id}"] .library-choice`);
+    await waitFor("!document.querySelector('#library-menu').hidden");
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const selector = `[data-library-id="${id}"] .library-choice`;
+    const hit = await evaluate(`(() => { const button=document.querySelector(${JSON.stringify(selector)}); const r=button.getBoundingClientRect(); const target=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2); return {disabled:button.disabled,rect:{x:r.x,y:r.y,width:r.width,height:r.height},hit:target?.closest('[data-library-id]')?.dataset.libraryId,outer:target?.outerHTML.slice(0,200)}; })()`);
+    assert.equal(hit.disabled, false, JSON.stringify(hit));
+    assert.equal(hit.hit, id, `Library choice must be hit-testable: ${JSON.stringify(hit)}`);
+    await click(selector);
   };
   for (const width of [1200, 820, 520]) {
     await call('Emulation.setDeviceMetricsOverride', { width, height:850, deviceScaleFactor:1, mobile:false });
@@ -566,8 +607,92 @@ try {
   await chooseLibrary('personal');
   await waitFor("document.querySelectorAll('.doc').length === 1");
   assert.equal(await evaluate("document.querySelector('#document-columns').hidden"), false, 'returning to files restores their headings');
+  // Progressive batches preserve the viewport, unchanged DOM nodes and pending-to-indexed identity.
+await chooseLibrary('work'); await waitFor("document.querySelectorAll('.doc').length === 2");
+await click('#sort'); await click('[data-sort=name]'); await waitFor("document.querySelector('[data-sort=name]').getAttribute('aria-checked') === 'true'");
+await evaluate("window.testProgressive('seed')");
+await waitFor("document.querySelectorAll('.doc').length === 50 && document.querySelectorAll('.pending-doc').length > 0");
+const progressiveBefore = await evaluate(`(() => {
+  const view = document.querySelector('#documents-scroll'); view.scrollTop = 600;
+  const edge = view.getBoundingClientRect().top;
+  const rows = Array.from(document.querySelectorAll('.doc'));
+  const row = rows.find(item => item.getBoundingClientRect().bottom > edge);
+  window.progressiveTarget = row.dataset.path; window.progressiveStable = rows[rows.indexOf(row)+1];
+  return { path:row.dataset.path, top:row.getBoundingClientRect().top-edge, scroll:view.scrollTop };
+})()`);
+assert.ok(progressiveBefore.scroll > 100);
+await evaluate("window.testProgressive('complete')");
+await waitFor("!!document.querySelector('.doc[data-id=committed-file]')");
+assert.equal(await evaluate("window.progressiveStable.isConnected && Array.from(document.querySelectorAll('.doc')).includes(window.progressiveStable)"), true, 'unchanged nodes are reused');
+await evaluate("window.testProgressive('insert')");
+await waitFor("document.querySelector('#count').textContent.includes('123')");
+const progressiveAfter = await evaluate(`(() => {
+  const view = document.querySelector('#documents-scroll');
+  const row = Array.from(document.querySelectorAll('.doc')).find(item => item.dataset.path === window.progressiveTarget);
+  return { top:row.getBoundingClientRect().top-view.getBoundingClientRect().top, scroll:view.scrollTop };
+})()`);
+assert.ok(Math.abs(progressiveAfter.top-progressiveBefore.top)<2, 'incoming earlier files never pull the viewport away from the reading anchor');
+assert.ok(progressiveAfter.scroll > 100);
+await evaluate("document.querySelector('#status').textContent = '索引进行中，已有资料仍可使用';");
+assert.equal(await evaluate("(()=>{const r=document.querySelector('#sync').getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button')?.id})()"), 'sync', 'fallback toasts never intercept pause clicks');
+await click('#sync');
+await waitFor("!document.querySelector('#sync').disabled && document.querySelector('#sync').getAttribute('aria-busy') === 'false'");
+assert.equal(await evaluate("window.testRequests.some(message=>message.type==='scanPause' && message.libraryRoot==='/library')"), true);
+assert.equal(await evaluate("document.querySelector('#status').textContent.includes('暂停') || window.testToasts.at(-1)?.title.includes('暂停')"), true, 'pause is not announced as a finished scan through either toast channel');
+await evaluate("window.testProgressive('restore')"); await waitFor("document.querySelectorAll('.doc').length === 2");
+
+// Empty folders and issue-only originals use real DOM rows and the existing status column.
+  await chooseLibrary('work');
+  await waitFor("document.querySelector('#library-path').textContent === '工作资料' && document.querySelectorAll('.doc').length === 2");
+  await evaluate('window.testInventory()');
+  await waitFor("document.querySelectorAll('.doc').length === 6 && !!document.querySelector('.directory-choice[title=empty]')");
+  assert.equal(await evaluate("document.querySelector('.directory-all .tag-count').textContent"), '6', 'total includes root files and unsupported files');
+  assert.equal(await evaluate("document.querySelector('#count').textContent.includes('6')"), true, 'header and sidebar use the same file total');
+  assert.equal(await evaluate("document.querySelector('.directory-choice[title=notes] .tag-count').textContent"), '4');
+  assert.equal(await evaluate("document.querySelector('.directory-choice[title=unsupported-only] .tag-count').textContent"), '1');
+  await click('.directory-choice[title=empty]');
+  await waitFor("document.querySelector('.library-empty')?.dataset.mode === 'directory'");
+  assert.equal(await evaluate("document.querySelector('#document-columns').hidden"), true);
+  assert.equal(await evaluate("document.querySelector('.directory-choice[title=empty] .tag-count').textContent"), '0');
+  await click('.directory-all'); await click('.directory-issues');
+  await waitFor("document.querySelectorAll('.issue-doc').length === 3");
+  assert.equal(await evaluate("document.querySelector('#column-status').textContent"), '索引状态');
+  assert.equal(await evaluate("document.querySelector('#document-columns').children.length"), 5, 'no extra reason column');
+  assert.equal(await evaluate("document.querySelector('.issue-doc[data-issue-kind=unsupported] .doc-status').textContent"), '不支持的格式');
+  assert.equal(await evaluate("document.querySelector('.issue-doc[data-issue-kind=empty_file] .doc-status').textContent"), '空文件');
+  assert.equal(await evaluate("document.querySelector('.issue-doc[data-issue-kind=failed] .doc-status').textContent.startsWith('无法解析 · Encrypted PDF fixture')"), true);
+  assert.equal(await evaluate("document.querySelectorAll('.directory-choice[aria-pressed=true], #tags .tag-choice[aria-pressed=true]').length"), 1, 'issue filter is exclusive');
+  const hierarchy = await evaluate("(() => { const issue=document.querySelector('.directory-issues'), folder=document.querySelector('.directory-choice[title=notes]'); return {siblings:issue.closest('.directory-item').parentElement===folder.closest('.directory-item').parentElement,indent:issue.querySelector('.tag-name').getBoundingClientRect().left-folder.querySelector('.tag-name').getBoundingClientRect().left}; })()");
+  assert.equal(hierarchy.siblings, true, 'built-in filter is a peer of source folders'); assert.ok(Math.abs(hierarchy.indent)<1, 'built-in filter matches folder indentation');
+  assert.equal(await evaluate("window.testRequests.filter(item=>item.type==='page').at(-1).issues"), true);
+  for (const width of [1200, 820, 520]) {
+    await call('Emulation.setDeviceMetricsOverride', { width, height:850, deviceScaleFactor:1, mobile:false });
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await moveTo('.issue-doc[data-issue-kind=failed]');
+    const status = await evaluate("(() => { const row=document.querySelector('.issue-doc[data-issue-kind=failed]'), s=row.querySelector('.doc-status').getBoundingClientRect(), r=row.getBoundingClientRect(); return {visible:getComputedStyle(row.querySelector('.doc-status')).visibility,right:s.right,rowRight:r.right,left:s.left,rowLeft:r.left}; })()");
+    assert.equal(status.visible, 'visible', 'hover never conceals the reason');
+    assert.ok(status.left >= status.rowLeft && status.right <= status.rowRight + 1, `reason fits ${width}px`);
+    const layout = await evaluate("(() => { const row=document.querySelector('.issue-doc[data-issue-kind=failed]'), status=row.querySelector('.doc-status'), text=status.querySelector('span'), glyph=status.querySelector('svg'), t=text.getBoundingClientRect(), g=glyph.getBoundingClientRect(); return {heights:[...document.querySelectorAll('.issue-doc')].map(item=>item.getBoundingClientRect().height),alignment:Math.abs(g.y+g.height/2-t.y-t.height/2),whiteSpace:getComputedStyle(text).whiteSpace,ellipsis:getComputedStyle(text).textOverflow,clipped:text.scrollWidth>text.clientWidth,title:status.title.length}; })()");
+    assert.ok(layout.heights.every(height=>Math.abs(height-46)<1), `long reasons never enlarge rows at ${width}px`);
+    assert.ok(layout.alignment<1, 'status icon and text have the same vertical center');
+    assert.equal(layout.whiteSpace, 'nowrap'); assert.equal(layout.ellipsis, 'ellipsis'); assert.equal(layout.clipped, true);
+    assert.ok(layout.title>200, 'full error remains available on hover');
+  }
+  await call('Emulation.setDeviceMetricsOverride', { width:1200,height:850,deviceScaleFactor:1,mobile:false });
+  await click('.directory-choice[title=notes]'); await waitFor("document.querySelectorAll('.doc').length === 4 && !document.querySelector('#knowledge-content').classList.contains('issues-view')");
+  assert.equal(await evaluate("document.querySelectorAll('.directory-choice[aria-pressed=true]').length"), 1, 'folder selection clears the built-in filter');
+  assert.equal(await evaluate("document.querySelector('.directory-issues').getAttribute('aria-pressed')"), 'false');
+  await click('.directory-issues'); await waitFor("document.querySelectorAll('.issue-doc').length === 3");
+  assert.equal(await evaluate("window.testRequests.filter(item=>item.type==='page').at(-1).directory"), null, 'built-in filter clears the previous directory');
+  assert.equal(await evaluate("document.querySelectorAll('.directory-choice[aria-pressed=true]').length"), 1);
+  await click('.directory-choice[title=empty]'); await waitFor("document.querySelectorAll('.doc').length === 0");
+  assert.equal(await evaluate("document.querySelector('#document-columns').hidden"), true, 'empty issue lists also hide headers');
+  await click('.directory-all'); await waitFor("document.querySelectorAll('.doc').length === 6 && !document.querySelector('#knowledge-content').classList.contains('issues-view')");
+  await chooseLibrary('personal'); await click('.directory-issues');
+  await waitFor("document.querySelectorAll('.doc').length === 0 && document.querySelector('.library-empty')");
+  assert.equal(await evaluate("document.querySelector('.directory-issues .tag-count').textContent"), '0', 'issue counts never leak across libraries');
   assert.deepEqual(runtimeErrors, []);
-  console.log('UI smoke passed: multi-library add/switch/failure isolation, stale-event rejection, responsive picker,  520/820/1200px status/action exclusivity, stable row geometry, multi-tag toggles, one completion toast and non-shifting toolbar popover.');
+  console.log('UI smoke passed: empty folders, unsupported/unrecognized files and inline Index status reasons; multi-library add/switch/failure isolation, stale-event rejection, responsive picker,  520/820/1200px status/action exclusivity, stable row geometry, multi-tag toggles, one completion toast and non-shifting toolbar popover.');
 } finally {
   if (socket?.readyState === 1) {
     socket.send(JSON.stringify({ id: ++serial, method: 'Browser.close' }));
