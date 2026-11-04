@@ -22,20 +22,23 @@
 
 ## 怎么用
 
-打开面板或页面后，顶部有一排筛选标签：
+成果库默认按**成果流**展示：按天分段，每份成果先显示标题和说明，下面一行小字写明所属项目和文件名，读起来像一份工作记录。右上角可以切换到**卡片**视图，卡片视图可以按项目、文件夹或日期分组，按项目分组时能拖动调整项目顺序。
 
-- **全部** — 所有会话产出的全部文件
-- **当前会话**（只在右侧面板里出现）— 只看这次对话产出的文件
-- **图片** — 只看生成的图片
-- **文件** — 只看文档类文件（图片以外的都算）
-
-卡片按时间从新到旧排列。Markdown 文件的卡片上会直接显示一段文字预览（标题+正文摘要），其他类型显示对应的格式图标。
-
-- **点击卡片** → 用 Finch 自带的文件预览直接打开，不用等下载
-- **悬浮时右上角会出现几个小按钮**：
+- **顶部一句话** — 一共多少份成果、本周新增多少、来自几个项目。
+- **筛选** — 标签页可选全部、当前会话（只在右侧面板里出现）和收藏；旁边可以搜索标题、说明和文件名；下面一排按项目筛选；类型下拉框只列出实际有的文件类型。
+- **同一份成果只占一条** — 同一个文件交付了多次（比如改了几轮的方案），只显示最新一次，旁边标“交付 N 次”。点这一条会展开全部交付记录，点其中一行就打开那一次的文件。同一会话、同一文件夹里连续生成的一批图片会合成一组，每张都能单独打开。
+- **点击成果** → 用 Finch 自带的文件预览打开。
+- **收藏** — 重要的成果点星标收藏，在“收藏”标签页里集中查看。
+- **复制当天成果** — 鼠标移到某一天的标题上，可以把当天的成果复制成一份清单，写日报时直接用。
+- **右键菜单** — 打开、复制文件路径、复制成果摘要、收藏、跳转到对应会话、删除。
+- **悬浮时卡片角落会出现几个小按钮**：
   - ✎ 添加批注 — 把这份文件作为引用插入当前对话的输入框，方便接着跟 AI 讨论它（只在右侧面板里出现，见下）
   - ↗ 跳转到这份文件是在哪个会话里生成的
-  - ✕ 删除这条记录——会先弹出确认弹窗，里面还有一个「同时从磁盘删除该文件」的勾选框，**默认不勾选**；勾上再确认才会真的删掉磁盘上的原文件，且不可恢复，请谨慎使用
+  - ✕ 删除这条记录——会先弹出确认弹窗，里面还有一个「同时从磁盘删除该文件」的勾选框，**默认不勾选**；勾上再确认才会真的删掉磁盘上的原文件，且不可恢复，请谨慎使用。交付过多次的成果会一起删除全部交付记录
+
+文件被移走或删除的成果会标明“文件已移动或删除”。成果库更新后，已经打开的页面会自动刷新一次，你的筛选、展开状态和滚动位置都会保留。
+
+AI 登记成果时，标题写的是成果本身，不带“V2”“初稿”这类版本标记；同一个文件改了几轮，会记成同一份成果的多次交付。
 
 「添加批注」只在右侧面板打开时才会出现——因为它要把文件插入*当前对话*的输入框，而左侧栏的独立页面不属于任何一个具体会话，没有输入框可以插。
 
@@ -50,7 +53,7 @@
 默认不会——删除只清掉"记录"（一条索引），不碰磁盘上的原始文件。如果你在删除弹窗里主动勾选了「同时从磁盘删除该文件」，才会真的把源文件也删掉，而且是永久删除、无法恢复，请谨慎操作。
 
 **数据存在哪里？会联网吗？**
-所有记录都存在本地（Finch 的扩展私有存储里），不联网。为了支持"同时从磁盘删除文件"这个可选功能，这个工具持有本地文件的读写权限，但只有你在删除弹窗里主动勾选时才会触发真正的磁盘删除操作，其余时候不会主动读写你的磁盘。
+所有记录都存在本地（Finch 的扩展私有存储里），不联网。成果库只读取它登记过的文件：用来显示图片缩略图、发现文件已被移走。只有你在删除弹窗里主动勾选时，才会删除磁盘上的文件。
 
 ## 支持的文件类型
 
@@ -90,20 +93,23 @@ All three entry points share the same icon (a little bookshelf 📚) for a consi
 
 ## How to use it
 
-At the top of the page/panel, there's a row of filter tabs:
+Artifacts opens as a **timeline**: one section per day, each artifact led by its title and description, with its project and file name in a small line below — it reads like a work log. Switch to the **Cards** view in the top-right corner to group by project, folder or date; when grouped by project you can drag projects into your own order.
 
-- **All** — everything, from every session
-- **Current Session** (only shown in the right-side panel) — just this conversation's output
-- **Images** — generated images only
-- **Files** — everything else (documents, not images)
-
-Cards are sorted newest first. Markdown files show a live text preview (heading + a snippet of the body) right on the card; other types show a plain type badge instead.
-
-- **Click a card** → opens it in Finch's native file preview, no extra download step
+- **A one-line summary** at the top — how many artifacts, how many this week, from how many projects.
+- **Filters** — tabs for All, Current Session (only in the right-side panel) and Starred; a search box for titles, descriptions and file names; a row of project filters; a type menu listing only the file types you actually have.
+- **One entry per artifact** — when the same file is delivered several times (a plan revised over a few rounds, say), only the latest delivery is shown, marked "Delivered N times". Click the entry to list every delivery, and click a row to open that delivery's file. A batch of images generated in one session and folder becomes one album; each image still opens on its own.
+- **Click an artifact** → opens it in Finch's native file preview.
+- **Star** the artifacts that matter; they collect under the Starred tab.
+- **Copy a day's list** — hover a day heading to copy that day's artifacts as a list, handy for a daily report.
+- **Right-click** for Open, Copy file path, Copy summary, Star, Go to session and Delete.
 - **Hover a card** to reveal a few small buttons in the corner:
   - ✎ add an annotation — inserts a reference to this file into the current conversation's Composer, so you can keep discussing it with the AI (only shown in the right-side panel, see below)
   - ↗ jump to the session where it was created
-  - ✕ remove this record — a confirmation dialog pops up first, with an "Also delete the file from disk" checkbox that is **unchecked by default**; only checking it and confirming actually deletes the original file, and that deletion is permanent
+  - ✕ remove this record — a confirmation dialog pops up first, with an "Also delete the file from disk" checkbox that is **unchecked by default**; only checking it and confirming actually deletes the original file, and that deletion is permanent. For an artifact delivered several times, every delivery is removed together
+
+Artifacts whose file was moved or deleted are marked as such. After Artifacts is updated, pages that are already open refresh themselves once and keep your filters, expanded entries and scroll position.
+
+When the AI records an artifact, the title names the artifact itself — no "V2" or "draft" markers; a file revised over several rounds is recorded as several deliveries of the same artifact.
 
 "Add annotation" only appears when opened as the right-side panel — it inserts into *that conversation's* Composer draft, and the standalone left-sidebar page isn't tied to any single session, so there's no draft to insert into.
 
@@ -118,7 +124,7 @@ No. Only document/image-type deliverables the AI explicitly produces get logged 
 Not by default — deleting only removes the index entry, not the file on disk. If you explicitly check "Also delete the file from disk" in the delete dialog, the original file is permanently removed too — that action cannot be undone, so use it carefully.
 
 **Where's the data stored? Does it need internet access?**
-Everything is stored locally in the extension's own private storage — no network access. To support the optional "delete from disk" action, this tool holds local read/write file permission, but it only touches your disk when you explicitly check that box in the delete dialog; otherwise it never reads or writes files on its own.
+Everything is stored locally in the extension's own private storage — no network access. Artifacts only reads files it has recorded: to show image thumbnails and to notice files that were moved. It deletes a file from disk only when you explicitly check that box in the delete dialog.
 
 ## Supported file types
 
