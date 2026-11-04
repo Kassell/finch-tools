@@ -903,8 +903,12 @@
       'open.permission': 'Permission to open this file was denied.',
       'open.unsupported': 'This version of Finch cannot preview files.',
       'open.openFailed': 'Finch could not open this file.',
+      'open.nativeFailed': 'The system could not open this file. Check its default app.',
+      'open.platform': 'Opening files is not supported on this system.',
       'panel.jumpToSession': 'Jump to session',
-      'ctx.open': 'Open',
+      'ctx.preview': 'Preview in Finch',
+      'ctx.openNative': 'Open in default app',
+      'ctx.reveal': 'Show in folder',
       'ctx.copyPath': 'Copy file path',
       'ctx.openSession': 'Go to session',
       'ctx.delete': 'Delete…',
@@ -922,13 +926,14 @@
       'panel.editedYearsAgo': 'Edited {n} year{s} ago',
       'panel.deleteConfirm.title': 'Delete this file?',
       'panel.deleteConfirm.message': '"{title}" will be removed from the record. This cannot be undone.',
-      'panel.deleteConfirm.deleteFileLabel': 'Also delete the file from disk — permanent, cannot be undone.',
+      'panel.deleteConfirm.deleteFileLabel': 'Also move the file to the Trash (you can restore it from there).',
       'panel.deleteConfirm.messageGroup': '"{title}" was delivered {n} times; all of them will be removed from the record. This cannot be undone.',
-      'panel.deleteConfirm.deleteFilesLabel': 'Also delete these {n} files from disk — permanent, cannot be undone.',
+      'panel.deleteConfirm.deleteFilesLabel': 'Also move these {n} files to the Trash (you can restore them from there).',
       'panel.deleteConfirm.confirm': 'Delete',
       'panel.deleteConfirm.cancel': 'Cancel',
       'panel.deleteToast.title': 'Deleted',
-      'panel.deleteToast.fileError': 'Record removed, but the file on disk could not be deleted',
+      'panel.deleteToast.fileError': 'Record removed, but the file could not be moved to the Trash',
+      'panel.deleteToast.trashed': 'Deleted · file moved to the Trash',
       'panel.group.none': 'None',
       'panel.group.space': 'Space',
       'panel.group.folder': 'Folder',
@@ -964,6 +969,7 @@
       'entry.images': '{n} images',
       'entry.star': 'Star',
       'entry.unstar': 'Unstar',
+      'entry.reveal': 'Show in folder',
       'ctx.star': 'Star',
       'ctx.unstar': 'Unstar',
       'ctx.copySummary': 'Copy summary',
@@ -1001,8 +1007,12 @@
       'open.permission': '没有权限打开这个文件。',
       'open.unsupported': '当前版本的 Finch 不支持预览文件。',
       'open.openFailed': 'Finch 无法打开这个文件。',
+      'open.nativeFailed': '系统无法打开这个文件，请检查是否设置了默认应用。',
+      'open.platform': '当前系统暂不支持直接打开文件。',
       'panel.jumpToSession': '跳转到会话',
-      'ctx.open': '打开',
+      'ctx.preview': '在 Finch 中预览',
+      'ctx.openNative': '用默认应用打开',
+      'ctx.reveal': '在文件夹中显示',
       'ctx.copyPath': '复制文件路径',
       'ctx.openSession': '跳转到对应会话',
       'ctx.delete': '删除…',
@@ -1020,13 +1030,14 @@
       'panel.editedYearsAgo': '{n} 年前编辑',
       'panel.deleteConfirm.title': '删除这份文件？',
       'panel.deleteConfirm.message': '「{title}」将从记录中移除，此操作无法撤销。',
-      'panel.deleteConfirm.deleteFileLabel': '同时从磁盘删除该文件——永久删除，无法恢复。',
+      'panel.deleteConfirm.deleteFileLabel': '同时把文件移到废纸篓（可在废纸篓里恢复）。',
       'panel.deleteConfirm.messageGroup': '「{title}」共交付 {n} 次，这些记录会一起移除，此操作无法撤销。',
-      'panel.deleteConfirm.deleteFilesLabel': '同时从磁盘删除这 {n} 个文件——永久删除，无法恢复。',
+      'panel.deleteConfirm.deleteFilesLabel': '同时把这 {n} 个文件移到废纸篓（可在废纸篓里恢复）。',
       'panel.deleteConfirm.confirm': '删除',
       'panel.deleteConfirm.cancel': '取消',
       'panel.deleteToast.title': '已删除',
-      'panel.deleteToast.fileError': '记录已删除，但磁盘上的文件删除失败',
+      'panel.deleteToast.fileError': '记录已删除，但文件没能移到废纸篓',
+      'panel.deleteToast.trashed': '已删除，文件已移到废纸篓',
       'panel.group.none': '不分组',
       'panel.group.space': '按项目（Space）',
       'panel.group.folder': '按文件夹',
@@ -1062,6 +1073,7 @@
       'entry.images': '{n} 张图',
       'entry.star': '收藏',
       'entry.unstar': '取消收藏',
+      'entry.reveal': '在文件夹中显示',
       'ctx.star': '收藏',
       'ctx.unstar': '取消收藏',
       'ctx.copySummary': '复制成果摘要',
@@ -1917,29 +1929,64 @@
   var openRequestTimer = null;
   function showOpenError(reason) {
     var el = document.getElementById('openError');
-    var known = ['missingFile', 'missingRecord', 'invalidPath', 'permission', 'unsupported', 'openFailed'];
+    var known = ['missingFile', 'missingRecord', 'invalidPath', 'permission', 'unsupported', 'openFailed', 'nativeFailed', 'platform'];
     el.textContent = t(known.indexOf(reason) >= 0 ? 'open.' + reason : 'open.error');
     el.hidden = false;
   }
-  // Click → Finch's built-in file preview. App View (the sidebar entry) has
-  // no Panel scope for the backend's ctx.ui.openFilePreview(), so it uses the
-  // page-side API, which must run inside this click's user gesture — no
-  // backend round trip before it.
+  // Formats Finch's built-in preview renders: text and Markdown, common
+  // images, HTML, and PDF / DOCX / XLSX through its document viewer, which
+  // refuses PDFs over 100 MB and DOCX / XLSX over 20 MB. Everything else
+  // (PowerPoint, legacy .doc / .xls, CSV, media …) opens in the default app.
+  var PREVIEW_TEXT_EXT = ['md', 'markdown', 'mdx', 'txt', 'text', 'log'];
+  var PREVIEW_IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'];
+  var PREVIEW_DOC_MAX_BYTES = { pdf: 100 * 1024 * 1024, docx: 20 * 1024 * 1024, xlsx: 20 * 1024 * 1024 };
+  function previewKind(r) {
+    if (!r || r.missing) return '';
+    var name = String(r.filePath || r.fileName || '').replace(/\\/g, '/').split('/').pop();
+    var dot = name.lastIndexOf('.');
+    var ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+    if (PREVIEW_TEXT_EXT.indexOf(ext) >= 0) return 'text';
+    if (PREVIEW_IMAGE_EXT.indexOf(ext) >= 0) return 'image';
+    if (ext === 'html' || ext === 'htm') return 'web';
+    if (PREVIEW_DOC_MAX_BYTES[ext]) {
+      return typeof r.fileSize === 'number' && r.fileSize > PREVIEW_DOC_MAX_BYTES[ext] ? '' : ext;
+    }
+    return '';
+  }
+  // App View (the sidebar entry) has no Panel scope for the backend's
+  // ctx.ui.openFilePreview(), so it uses the page-side API, which must run
+  // inside this click's user gesture — no backend round trip before it. In a
+  // Panel the backend previews, and falls back to the default app itself if
+  // Finch refuses the file.
+  function previewRecord(r) {
+    document.getElementById('openError').hidden = true;
+    if (currentView === 'appView' && finchApi && finchApi.appView && typeof finchApi.appView.openPreview === 'function') {
+      try {
+        Promise.resolve(finchApi.appView.openPreview(r.filePath)).catch(function(err) {
+          console.warn('[finch-delivery] appView.openPreview failed, opening in the default app:', err);
+          openInDefaultApp(r.id);
+        });
+      } catch (err) { openInDefaultApp(r.id); }
+      return;
+    }
+    sendOpenRequest('openPreview', r.id);
+  }
+  function openInDefaultApp(id) {
+    document.getElementById('openError').hidden = true;
+    sendOpenRequest('openNative', id);
+  }
+  function revealInFolder(id) {
+    document.getElementById('openError').hidden = true;
+    sendOpenRequest('revealNative', id);
+  }
+  // Click → Finch's preview when it can render the file, otherwise the default app.
   function openRecord(id) {
     var r = findRecord(id);
     if (!r) return;
     document.getElementById('openError').hidden = true;
     if (r.missing) { showOpenError('missingFile'); return; }
-    if (currentView === 'appView' && finchApi && finchApi.appView && typeof finchApi.appView.openPreview === 'function') {
-      try {
-        Promise.resolve(finchApi.appView.openPreview(r.filePath)).catch(function(err) {
-          console.error('[finch-delivery] appView.openPreview failed:', err);
-          showOpenError('openFailed');
-        });
-      } catch (err) { showOpenError('openFailed'); }
-      return;
-    }
-    sendOpenRequest('openPreview', id);
+    if (previewKind(r)) previewRecord(r);
+    else openInDefaultApp(id);
   }
   function sendOpenRequest(type, id) {
     clearTimeout(openRequestTimer);
@@ -1964,6 +2011,7 @@
   var STAR_PATH = '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>';
   var STAR_ICON = SVG_OPEN + STAR_PATH + '</svg>';
   var STAR_FILLED_ICON = SVG_OPEN.replace('fill="none"', 'fill="currentColor"') + STAR_PATH + '</svg>';
+  var FOLDER_ICON = SVG_OPEN + '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>';
   var EMPTY_ICON = '<span style="display:inline-block;width:40px;height:40px">' + SVG_OPEN.replace('<svg ', '<svg width="40" height="40" ') + '<rect width="8" height="18" x="3" y="3" rx="1"/><path d="M7 3v18"/><path d="M20.4 18.9c.2.5-.1 1.1-.6 1.3l-1.9.7c-.5.2-1.1-.1-1.3-.6L11.1 5.1c-.2-.5.1-1.1.6-1.3l1.9-.7c.5-.2 1.1.1 1.3.6Z"/></svg></span>';
 
   function pad2(n) { return String(n).padStart(2, '0'); }
@@ -2192,6 +2240,7 @@
   function actionsHtml(r, albumMode, starred) {
     var h = '<div class="entry-actions">';
     if (!albumMode) h += iconBtn('data-tl-star', r.id, starred ? STAR_FILLED_ICON : STAR_ICON, t(starred ? 'entry.unstar' : 'entry.star'), starred ? ' on' : '');
+    if (!r.missing) h += iconBtn('data-tl-reveal', r.id, FOLDER_ICON, t('entry.reveal'));
     if (!albumMode && currentView !== 'appView') h += iconBtn('data-tl-annotate', r.id, ANNOTATE_ICON, t('panel.annotate'));
     if (r.sessionId) h += iconBtn('data-tl-session', r.id, JUMP_ICON, t('panel.jumpToSession'));
     if (!albumMode) h += iconBtn('data-tl-remove', r.id, REMOVE_ICON, t('panel.remove'), ' danger');
@@ -2402,6 +2451,7 @@
     var el, id;
     function hit(attr) { el = e.target.closest('[' + attr + ']'); id = el ? el.getAttribute(attr) : ''; return !!el; }
     if (hit('data-tl-star')) { toggleStar(id); return; }
+    if (hit('data-tl-reveal')) { revealInFolder(id); return; }
     if (hit('data-tl-annotate')) { annotateRecord(findRecord(id)); return; }
     if (hit('data-tl-session')) {
       var rs = findRecord(id);
@@ -2463,12 +2513,15 @@
   function showContextMenu(record, x, y, unit) {
     closeContextMenu();
     var starredNow = unit ? unitStarred(unit) : !!record.starred;
-    var items = [
-      { key: 'open', label: t('ctx.open') },
+    var items = [];
+    if (previewKind(record)) items.push({ key: 'preview', label: t('ctx.preview') });
+    items.push(
+      { key: 'native', label: t('ctx.openNative') },
+      { key: 'reveal', label: t('ctx.reveal') },
       { key: 'copy', label: t('ctx.copyPath') },
       { key: 'summary', label: t('ctx.copySummary') },
       { key: 'star', label: t(starredNow ? 'ctx.unstar' : 'ctx.star') }
-    ];
+    );
     if (record.sessionId && finchApi && finchApi.navigation && finchApi.navigation.openSession) {
       items.push({ key: 'session', label: t('ctx.openSession') });
     }
@@ -2492,7 +2545,9 @@
       if (!btn) return;
       var key = btn.dataset.ctx;
       closeContextMenu();
-      if (key === 'open') openRecord(record.id);
+      if (key === 'preview') previewRecord(record);
+      else if (key === 'native') openInDefaultApp(record.id);
+      else if (key === 'reveal') revealInFolder(record.id);
       else if (key === 'copy') copyText(record.filePath || '');
       else if (key === 'summary') copyText(summaryLine(record), t('ctx.summaryCopied'));
       else if (key === 'star') toggleStar(record.id);
@@ -2612,7 +2667,7 @@
           if (message.deleteFileRequested && message.fileDeleteError) {
             finchApi.ui.toast({ title: t('panel.deleteToast.fileError'), variant: 'warning' }).catch(function() {});
           } else {
-            finchApi.ui.toast({ title: t('panel.deleteToast.title'), variant: 'success' }).catch(function() {});
+            finchApi.ui.toast({ title: t(message.deleteFileRequested ? 'panel.deleteToast.trashed' : 'panel.deleteToast.title'), variant: 'success' }).catch(function() {});
           }
         }
         return;

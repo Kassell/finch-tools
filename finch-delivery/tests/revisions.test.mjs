@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { startHost, tempFiles } from './helpers.mjs';
+import { nativeCalls, startHost, tempFiles } from './helpers.mjs';
 
 const exists = (p) => access(p).then(() => true, () => false);
+/** Paths handed to the (fake) Trash commands since `from`. */
+const trashedSince = (from) => nativeCalls.slice(from).map((c) => c.args[c.args.length - 1]);
+const noTrash = { skip: !['darwin', 'linux'].includes(process.platform) && 'the Trash is only reachable on macOS and Linux' };
 const rec = (id, filePath, extra = {}) => ({
   id, sessionId: 's1', filePath, fileName: filePath.split('/').pop(), fileType: 'md',
   title: id, description: '', createdAt: 1, ...extra,
@@ -61,10 +64,10 @@ test('the tool tells the AI how to title and when to record', async () => {
   }
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.match(pkg.finch.systemPrompt, /revision of the existing entry/);
-  assert.equal(pkg.finch.permissions.shell, false, 'no shell permission in this change');
+  assert.equal(pkg.finch.permissions.shell, true, 'shell runs the open / reveal / Trash commands');
 });
 
-test('remove deletes every delivery of an entry and, if asked, their files', async () => {
+test('remove deletes every delivery of an entry and, if asked, moves their files to the Trash', noTrash, async () => {
   const { dir, paths } = await tempFiles(['run-preview.md', 'run-v2-preview.md', 'keep.md']);
   const p1 = paths['run-preview.md'];
   const p2 = paths['run-v2-preview.md'];
@@ -78,19 +81,21 @@ test('remove deletes every delivery of an entry and, if asked, their files', asy
   });
   await host.settle();
   const view = host.openPanel();
+  const before = nativeCalls.length;
   await view.send({ type: 'remove', id: '1', ids: ['1', '2', '3'], deleteFile: true });
   assert.deepEqual(host.records().map((r) => r.id), ['6']);
-  assert.equal(await exists(p1), false);
-  assert.equal(await exists(p2), false);
-  assert.equal(view.last('removeResult').fileDeleteError, undefined, 'an already missing file is not an error');
+  assert.deepEqual(trashedSince(before).sort(), [p1, p2].sort(), 'a file already gone is skipped');
+  assert.equal(view.last('removeResult').fileDeleteError, undefined);
   assert.deepEqual(view.last('removeResult').ids, ['1', '2', '3']);
 
+  const mid = nativeCalls.length;
   await view.send({ type: 'remove', id: '6', deleteFile: false });
   assert.equal(host.records().some((r) => r.id === '6'), false, 'a single id still works');
-  assert.equal(await exists(paths['keep.md']), true, 'an unchecked box never touches the file');
+  assert.equal(nativeCalls.length, mid, 'an unchecked box never touches the file');
+  assert.equal(await exists(paths['keep.md']), true);
 });
 
-test('remove leaves a file that another remaining record still points to', async () => {
+test('remove leaves a file that another remaining record still points to', noTrash, async () => {
   const { paths } = await tempFiles(['shared.md']);
   const host = startHost({ store: { deliveries: [rec('b', '/elsewhere/x.md', { sessionId: 's2' })] } });
   await host.settle();
@@ -98,7 +103,9 @@ test('remove leaves a file that another remaining record still points to', async
   // merge); deleting one of them must leave the file for the other.
   host.store.deliveries.push(rec('a', paths['shared.md'], { sessionId: 's1' }), rec('c', paths['shared.md'], { sessionId: 's3', createdAt: 5 }));
   const view = host.openPanel();
+  const before = nativeCalls.length;
   await view.send({ type: 'remove', ids: ['a'], deleteFile: true });
+  assert.deepEqual(trashedSince(before), []);
   assert.equal(await exists(paths['shared.md']), true);
 });
 
