@@ -75,20 +75,101 @@
     font-weight: 700;
     letter-spacing: -0.02em;
   }
-  .header .count {
+  /* ── Filter tabs — flat segmented control ── */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  #openError:not([hidden]) {
+    margin: 0 0 16px; padding: 10px 12px;
+    border: 1px solid var(--df-border); border-radius: 8px;
+    background: var(--df-bg-elevated); color: var(--df-text-primary);
+  }
+  .group-select-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 13px;
     color: var(--df-text-secondary);
-    background: var(--df-bg-elevated);
-    padding: 4px 10px;
-    border-radius: 20px;
-    border: 1px solid var(--df-border);
   }
-
-  /* ── Filter tabs — flat segmented control ── */
+  .group-select {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--df-border);
+    background: var(--df-bg-elevated);
+    color: var(--df-text-primary);
+    cursor: pointer;
+  }
+  .group { margin-bottom: 22px; }
+  .group-heading {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--df-border);
+  }
+  .group-heading[draggable="true"] { position: relative; cursor: grab; }
+  .group-heading.dragging { opacity: .45; cursor: grabbing; }
+  .group-heading.drop-before::before, .group-heading.drop-after::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 3px;
+    border-radius: 3px; background: var(--df-accent); pointer-events: none;
+  }
+  .group-heading.drop-before::before { top: -3px; }
+  .group-heading.drop-after::after { bottom: -3px; }
+  .group-drag-handle {
+    width: 24px; height: 28px; padding: 0; flex-shrink: 0;
+    border: 0; border-radius: 5px; background: transparent;
+    color: var(--df-text-tertiary); cursor: grab; font-size: 17px;
+  }
+  .group-drag-handle:hover, .group-drag-handle:focus-visible { color: var(--df-accent); }
+  .group-heading.dragging .group-drag-handle { cursor: grabbing; }
+  .group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    padding: 6px 2px;
+    border: none;
+    background: transparent;
+    color: var(--df-text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+  }
+  .group-header .chev {
+    display: inline-block;
+    width: 12px;
+    color: var(--df-text-secondary);
+    transition: transform 0.15s;
+  }
+  .group.collapsed .group-header .chev { transform: rotate(-90deg); }
+  .group.collapsed .grid { display: none; }
+  .group-header .group-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .group-header .group-count {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--df-text-secondary);
+    background: var(--df-bg-hover);
+    border-radius: 10px;
+    padding: 1px 8px;
+    flex-shrink: 0;
+  }
   .tabs {
     display: flex;
     gap: 2px;
-    margin-bottom: 20px;
     background: var(--df-bg-hover);
     border-radius: 10px;
     padding: 3px;
@@ -421,10 +502,248 @@
     line-height: 1.6;
   }
 
-  /* ── Delete confirmation modal ──
-     window.finch.ui.confirm() can't render a checkbox (pure text/token
-     dialog), so the delete-with-file-checkbox flow uses a small custom
-     overlay instead. */
+  /* ══ Header, filters, timeline ══════════════════════════════════════════ */
+  .header { align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+  .title-block { min-width: 0; }
+  .summary {
+    margin-top: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--df-text-secondary);
+  }
+  .summary b { font-weight: 600; color: var(--df-text-primary); }
+  .view-toggle { display: flex; gap: 2px; background: var(--df-bg-hover); border-radius: 9px; padding: 3px; flex-shrink: 0; }
+  .view-btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 5px 10px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--df-text-secondary);
+    font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  }
+  .view-btn svg { width: 14px; height: 14px; }
+  .view-btn.active { background: var(--df-bg-elevated); color: var(--df-text-primary); box-shadow: var(--finch-shadow-sm, 0 1px 3px rgba(0,0,0,0.1)); }
+  .view-btn:not(.active):hover { color: var(--df-text-primary); }
+
+  .toolbar { flex-wrap: nowrap; }
+  .search {
+    flex: 1 1 160px; max-width: 300px; min-width: 0;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px; height: 32px;
+    border: 1px solid var(--df-border); border-radius: 9px;
+    background: var(--df-bg-elevated); color: var(--df-text-tertiary);
+  }
+  .search:focus-within { border-color: var(--df-accent); }
+  .search svg { width: 14px; height: 14px; flex-shrink: 0; }
+  .search input {
+    flex: 1; min-width: 0; border: 0; outline: 0; background: transparent;
+    font: inherit; font-size: 13px; color: var(--df-text-primary);
+  }
+  .search input::placeholder { color: var(--df-text-tertiary); }
+
+  .filter-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px; }
+  .project-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+  .toolbar-right { display: flex; gap: 6px; flex-shrink: 0; }
+  .toolbar-right .group-select { font-size: 12px; padding: 4px 6px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border: 1px solid var(--df-border); border-radius: 14px;
+    background: transparent; color: var(--df-text-secondary);
+    font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .chip .n { color: var(--df-text-tertiary); font-variant-numeric: tabular-nums; }
+  .chip:hover { color: var(--df-text-primary); border-color: var(--df-text-tertiary); }
+  .chip.active { color: var(--df-text-primary); border-color: var(--df-text-primary); background: var(--df-bg-elevated); font-weight: 600; }
+  .chip.active .n { color: var(--df-text-secondary); }
+
+  /* Day sections */
+  .day { margin-bottom: 26px; }
+  .day-head {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    padding: 0 2px 10px 0;
+  }
+  .day-title { font-size: 15px; font-weight: 700; color: var(--df-text-primary); }
+  .day-date { font-size: 12px; color: var(--df-text-secondary); }
+  .day-meta { font-size: 12px; color: var(--df-text-tertiary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .day-copy {
+    border: 0; background: transparent; padding: 2px 4px; border-radius: 5px;
+    font: inherit; font-size: 12px; color: var(--df-text-tertiary); cursor: pointer;
+    opacity: 0; transition: opacity .15s;
+  }
+  .day:hover .day-copy, .day-copy:focus-visible { opacity: 1; }
+  .day-copy:hover { color: var(--df-accent); background: var(--df-bg-hover); }
+
+  /* Timeline rows */
+  .entry {
+    display: grid;
+    grid-template-columns: 38px 14px minmax(0, 1fr);
+    column-gap: 8px;
+  }
+  .entry-time {
+    padding-top: 14px; text-align: right;
+    font-size: 12px; color: var(--df-text-tertiary); font-variant-numeric: tabular-nums;
+  }
+  .entry-rail { position: relative; }
+  .entry-rail::before {
+    content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+    background: var(--df-border); transform: translateX(-50%);
+  }
+  .entry:first-child .entry-rail::before { top: 19px; }
+  .entry:last-child .entry-rail::before { bottom: auto; height: 19px; }
+  .entry:first-child:last-child .entry-rail::before { display: none; }
+  .entry-rail::after {
+    content: ''; position: absolute; left: 50%; top: 15px; width: 9px; height: 9px;
+    border-radius: 50%; transform: translateX(-50%);
+    background: var(--df-bg-root); border: 2px solid var(--df-text-tertiary);
+    box-sizing: border-box;
+  }
+  .entry.starred .entry-rail::after { background: var(--df-accent); border-color: var(--df-accent); }
+  .entry-card {
+    position: relative;
+    display: flex; gap: 14px; align-items: flex-start;
+    margin-bottom: 10px; padding: 12px 14px;
+    background: var(--df-bg-elevated); border: 1px solid var(--df-border);
+    border-radius: var(--finch-radius-md, 12px);
+    cursor: pointer; transition: box-shadow .18s, border-color .18s;
+  }
+  .entry-card:hover { box-shadow: var(--finch-shadow-sm, 0 4px 14px rgba(0,0,0,0.07)); border-color: var(--df-text-tertiary); }
+  .entry.missing .entry-card { cursor: default; }
+  .entry.missing .entry-title, .entry.missing .entry-desc { opacity: .6; }
+  .entry-text { flex: 1; min-width: 0; }
+  .entry-title {
+    font-size: 14px; font-weight: 650; line-height: 1.45; color: var(--df-text-primary);
+    word-break: break-word;
+  }
+  .entry-title .star-mark { color: var(--df-accent); margin-right: 4px; font-size: 13px; }
+  .entry-desc {
+    margin-top: 3px; font-size: 12.5px; line-height: 1.6; color: var(--df-text-secondary);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    word-break: break-word;
+  }
+  .entry-meta {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;
+    margin-top: 8px; font-size: 11.5px; color: var(--df-text-tertiary);
+  }
+  .entry-meta > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .meta-time { display: none; font-variant-numeric: tabular-nums; }
+  .meta-project { color: var(--df-text-secondary); font-weight: 500; }
+  .meta-file .ext { font-weight: 700; letter-spacing: .03em; margin-right: 4px; }
+  .meta-missing { color: #c2410c; }
+  .meta-versions {
+    border: 0; background: transparent; padding: 0; font: inherit; font-size: 11.5px;
+    color: var(--df-text-secondary); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px;
+  }
+  .meta-versions:hover { color: var(--df-accent); }
+  [hidden] { display: none !important; }
+  /* Overlaid, not in-flow: invisible buttons in the meta row used to wrap
+     onto their own line in narrow panels and leave a blank band. */
+  .entry-actions {
+    position: absolute; right: 8px; bottom: 8px; z-index: 3;
+    display: flex; gap: 4px; padding: 3px;
+    background: var(--df-bg-elevated); border-radius: 9px;
+    box-shadow: 0 0 0 1px var(--df-border), 0 4px 12px rgba(0,0,0,0.08);
+    opacity: 0; pointer-events: none; transition: opacity .15s;
+  }
+  .entry-card:hover .entry-actions, .entry-actions:focus-within { opacity: 1; pointer-events: auto; }
+  .entry-actions .btn-icon { width: 24px; height: 24px; box-shadow: none; border-color: transparent; }
+  .entry-actions .btn-icon svg { width: 13px; height: 13px; }
+  .entry-actions .btn-icon.on { color: var(--df-accent); border-color: var(--df-accent); }
+  .entry-actions .btn-tooltip { right: 0; }
+
+  .entry-thumb {
+    flex-shrink: 0; width: 96px; height: 72px; border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--df-border); background: var(--df-bg-root);
+  }
+  .entry-thumb .preview-image-slot .glyph, .album-thumb .preview-image-slot .glyph { font-size: 10px; padding: 3px 7px; }
+  .entry-thumb .preview-image-slot .hint, .album-thumb .preview-image-slot .hint { display: none; }
+  .doc-tile {
+    flex-shrink: 0; width: 38px; height: 46px; margin-top: 2px;
+    border: 1px solid var(--df-border); border-radius: 4px 11px 4px 4px;
+    background: var(--df-bg-root);
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 6px;
+    font-size: 9px; font-weight: 800; letter-spacing: .04em; color: var(--df-text-tertiary);
+  }
+
+  .album-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .album-thumb {
+    width: 92px; height: 68px; border-radius: 7px; overflow: hidden; position: relative;
+    border: 1px solid var(--df-border); background: var(--df-bg-root); cursor: pointer;
+    transition: border-color .15s, transform .15s;
+  }
+  .album-thumb:hover { border-color: var(--df-accent); transform: translateY(-1px); }
+  .album-thumb.missing { opacity: .45; }
+
+  .entry-history {
+    margin-top: 10px; padding: 8px 0 0; border-top: 1px dashed var(--df-border);
+    display: flex; flex-direction: column; gap: 6px; cursor: default;
+  }
+  .ver { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 8px; font-size: 12px; line-height: 1.5; }
+  .ver { cursor: pointer; border-radius: 6px; }
+  .ver:hover .ver-title { color: var(--df-accent); }
+  .ver[data-revision] { cursor: default; }
+  .ver[data-revision]:hover .ver-title { color: var(--df-text-secondary); }
+  /* Expanded list of every delivery of one deliverable */
+  .ver { padding: 4px 6px; margin: 0 -6px; }
+  .ver[data-tl-open]:hover { background: var(--df-bg-hover); }
+  .ver-body { min-width: 0; }
+  .ver.has-thumb { grid-template-columns: 78px minmax(0, 1fr) 56px; align-items: start; }
+  .ver-thumb { width: 56px; height: 42px; border-radius: 5px; overflow: hidden; border: 1px solid var(--df-border); background: var(--df-bg-root); }
+  .ver-thumb .preview-image-slot .glyph, .ver-thumb .preview-image-slot .hint { display: none; }
+  .ver-tag { margin-left: 6px; font-size: 11px; font-weight: 500; color: var(--df-text-tertiary); }
+  .ver-note { font-size: 11.5px; color: var(--df-text-tertiary); }
+  .entry-card.expanded { border-color: var(--df-text-tertiary); }
+  .card.expanded { grid-column: 1 / -1; height: auto; }
+  .card.expanded .card-preview { flex: none; height: 96px; }
+  .card .entry-history { margin-top: 10px; }
+  .card-time .meta-versions { font-size: 12px; color: var(--df-text-secondary); }
+  .ver-time { color: var(--df-text-tertiary); font-variant-numeric: tabular-nums; }
+  .ver-title { color: var(--df-text-secondary); font-weight: 600; }
+  .ver-desc { color: var(--df-text-tertiary); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+
+  @keyframes entry-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .entry.is-new { animation: entry-in .3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @media (prefers-reduced-motion: reduce) { .entry.is-new { animation: none; } }
+
+  .card .star-mark { color: var(--df-accent); margin-right: 4px; }
+
+  @media (max-width: 460px) {
+    #app { padding: 18px 14px 40px; }
+    .entry { grid-template-columns: 12px minmax(0, 1fr); column-gap: 10px; }
+    .entry-time { display: none; }
+    .meta-time { display: inline; }
+    .entry-thumb { width: 72px; height: 56px; }
+    .doc-tile { display: none; }
+    .album-thumb { width: 76px; height: 58px; }
+    .view-btn span { display: none; }
+    .filter-row { flex-direction: column; gap: 8px; }
+  }
+
+  /* ── Right-click context menu ── */
+  .ctx-menu {
+    position: fixed;
+    z-index: 200;
+    min-width: 168px;
+    padding: 4px;
+    background: var(--df-bg-elevated);
+    border: 1px solid var(--df-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+    font-size: 13px;
+    color: var(--df-text-primary);
+  }
+  .ctx-item {
+    display: block;
+    width: 100%;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ctx-item:hover { background: var(--df-bg-hover); }
+  .ctx-item.danger { color: #e5484d; }
+  .ctx-sep { height: 1px; margin: 4px 2px; background: var(--df-border); }
   .modal-overlay {
     position: fixed;
     inset: 0;
@@ -511,15 +830,36 @@
 <body>
 <div id="app">
   <div class="header">
-    <div class="title-group">
-      <span class="title-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="18" x="3" y="3" rx="1"/><path d="M7 3v18"/><path d="M20.4 18.9c.2.5-.1 1.1-.6 1.3l-1.9.7c-.5.2-1.1-.1-1.3-.6L11.1 5.1c-.2-.5.1-1.1.6-1.3l1.9-.7c.5-.2 1.1.1 1.3.6Z"/></svg></span>
-      <h1 id="title">Artifacts</h1>
+    <div class="title-block">
+      <div class="title-group">
+        <span class="title-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="18" x="3" y="3" rx="1"/><path d="M7 3v18"/><path d="M20.4 18.9c.2.5-.1 1.1-.6 1.3l-1.9.7c-.5.2-1.1-.1-1.3-.6L11.1 5.1c-.2-.5.1-1.1.6-1.3l1.9-.7c.5-.2 1.1.1 1.3.6Z"/></svg></span>
+        <h1 id="title">Artifacts</h1>
+      </div>
+      <p class="summary" id="summary"></p>
     </div>
-    <span class="count" id="count">0</span>
+    <div class="view-toggle" id="viewToggle" role="group"></div>
   </div>
 
-  <div class="tabs" id="tabs"></div>
+  <div class="toolbar">
+    <div class="tabs" id="tabs"></div>
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input type="search" id="search" autocomplete="off" spellcheck="false">
+    </label>
+  </div>
 
+  <div class="filter-row">
+    <div class="project-chips" id="projectChips" role="group"></div>
+    <div class="toolbar-right">
+      <label class="group-select-wrap" id="typeSelectWrap">
+        <select class="group-select" id="typeSelect"></select>
+      </label>
+      <label class="group-select-wrap" id="groupWrap">
+        <select class="group-select" id="groupBy"></select>
+      </label>
+    </div>
+  </div>
+  <div id="openError" role="alert" hidden></div>
   <div id="content"></div>
 </div>
 
@@ -537,15 +877,38 @@
       'panel.title': 'Artifacts',
       'panel.tab.all': 'All',
       'panel.tab.current': 'Current Session',
-      'panel.tab.image': 'Images',
-      'panel.tab.file': 'Files',
-      'panel.count': '{count} files',
+      'panel.type.label': 'File type',
+      'panel.type.all': 'All types',
+      'panel.type.image': 'Images',
+      'panel.type.excel': 'Excel',
+      'panel.type.word': 'Word',
+      'panel.type.pdf': 'PDF',
+      'panel.type.ppt': 'PowerPoint',
+      'panel.type.md': 'Markdown',
+      'panel.type.web': 'Web pages',
+      'panel.type.text': 'Text',
+      'panel.type.audio': 'Audio',
+      'panel.type.video': 'Video',
+      'panel.type.archive': 'Archives',
+      'panel.type.ebook': 'E-books',
+      'panel.type.other': 'Other',
+      'panel.emptyType': 'No files of this type in the selected scope.',
       'panel.emptyCurrent': 'No files generated in this session yet.<br>Ask {finch} to create a document — it will show up here.',
       'panel.emptyAll': 'No files generated yet.<br>Ask {finch} to create a document — it will show up here.',
-      'panel.emptyImage': 'No images yet.<br>Ask {finch} to generate an image — it will show up here.',
-      'panel.emptyFile': 'No files yet.<br>Ask {finch} to create a document — it will show up here.',
       'panel.noPreview': 'No preview available',
+      'open.error': 'Could not open this file.',
+      'open.missingFile': 'The file no longer exists or has moved.',
+      'open.missingRecord': 'This artifact record could not be found.',
+      'open.invalidPath': 'The recorded file path is invalid.',
+      'open.permission': 'Permission to open this file was denied.',
+      'open.unsupported': 'This version of Finch cannot preview files.',
+      'open.openFailed': 'Finch could not open this file.',
       'panel.jumpToSession': 'Jump to session',
+      'ctx.open': 'Open',
+      'ctx.copyPath': 'Copy file path',
+      'ctx.openSession': 'Go to session',
+      'ctx.delete': 'Delete…',
+      'ctx.copied': 'Path copied',
       'panel.remove': 'Remove',
       'panel.annotate': 'Add annotation',
       'panel.annotateToast.title': 'Annotation added',
@@ -560,24 +923,90 @@
       'panel.deleteConfirm.title': 'Delete this file?',
       'panel.deleteConfirm.message': '"{title}" will be removed from the record. This cannot be undone.',
       'panel.deleteConfirm.deleteFileLabel': 'Also delete the file from disk — permanent, cannot be undone.',
+      'panel.deleteConfirm.messageGroup': '"{title}" was delivered {n} times; all of them will be removed from the record. This cannot be undone.',
+      'panel.deleteConfirm.deleteFilesLabel': 'Also delete these {n} files from disk — permanent, cannot be undone.',
       'panel.deleteConfirm.confirm': 'Delete',
       'panel.deleteConfirm.cancel': 'Cancel',
       'panel.deleteToast.title': 'Deleted',
-      'panel.deleteToast.fileError': 'Record removed, but the file on disk could not be deleted'
+      'panel.deleteToast.fileError': 'Record removed, but the file on disk could not be deleted',
+      'panel.group.none': 'None',
+      'panel.group.space': 'Space',
+      'panel.group.folder': 'Folder',
+      'panel.group.date': 'Date',
+      'panel.group.noSpace': 'No Space',
+      'panel.group.drag': 'Drag to reorder {name}; use arrow keys to move',
+      'panel.group.today': 'Today',
+      'panel.group.yesterday': 'Yesterday',
+      'panel.group.thisWeek': 'This week',
+      'panel.group.earlier': 'Earlier',
+      'v.timeline': 'Timeline',
+      'v.grid': 'Cards',
+      'panel.tab.starred': 'Starred',
+      'search.placeholder': 'Search titles and notes',
+      'summary.text': '<b>{n}</b> artifacts · <b>{w}</b> this week · {p} projects',
+      'summary.textNoProject': '<b>{n}</b> artifacts · <b>{w}</b> this week',
+      'summary.filtered': 'Showing <b>{n}</b> of {total}',
+      'chip.allProjects': 'All projects',
+      'type.allWithCount': 'All types',
+      'group.prefix': 'Group: ',
+      'day.weekdays': 'Sun,Mon,Tue,Wed,Thu,Fri,Sat',
+      'day.date': '{w}, {m}/{d}',
+      'day.dateYear': '{w}, {m}/{d}/{y}',
+      'day.meta': '{n} items',
+      'day.copy': 'Copy list',
+      'day.copied': 'Day list copied',
+      'day.copyHeading': 'Artifacts for {date}',
+      'entry.versions': 'Delivered {n} times',
+      'entry.hideVersions': 'Collapse',
+      'entry.latest': 'Latest',
+      'entry.overwritten': 'Overwritten by the newer delivery',
+      'entry.missing': 'File moved or deleted',
+      'entry.images': '{n} images',
+      'entry.star': 'Star',
+      'entry.unstar': 'Unstar',
+      'ctx.star': 'Star',
+      'ctx.unstar': 'Unstar',
+      'ctx.copySummary': 'Copy summary',
+      'ctx.summaryCopied': 'Summary copied',
+      'panel.emptyStarred': 'Nothing starred yet.<br>Star the artifacts that matter — they collect here.',
+      'panel.emptySearch': 'No artifacts match “{q}”.'
     },
     zh: {
       'panel.title': '成果库',
       'panel.tab.all': '全部',
       'panel.tab.current': '当前会话',
-      'panel.tab.image': '图片',
-      'panel.tab.file': '文件',
-      'panel.count': '{count} 个文件',
+      'panel.type.label': '文件类型',
+      'panel.type.all': '全部类型',
+      'panel.type.image': '图片',
+      'panel.type.excel': 'Excel',
+      'panel.type.word': 'Word',
+      'panel.type.pdf': 'PDF',
+      'panel.type.ppt': 'PPT',
+      'panel.type.md': 'Markdown',
+      'panel.type.web': '网页',
+      'panel.type.text': '文本',
+      'panel.type.audio': '音频',
+      'panel.type.video': '视频',
+      'panel.type.archive': '压缩包',
+      'panel.type.ebook': '电子书',
+      'panel.type.other': '其他',
+      'panel.emptyType': '当前范围内没有这种类型的成果。',
       'panel.emptyCurrent': '此会话还没有生成文件。<br>让 {finch} 生成一份文档，它就会出现在这里。',
       'panel.emptyAll': '还没有生成文件。<br>让 {finch} 生成一份文档，它就会出现在这里。',
-      'panel.emptyImage': '还没有图片。<br>让 {finch} 生成一张图片，它就会出现在这里。',
-      'panel.emptyFile': '还没有文件。<br>让 {finch} 生成一份文档，它就会出现在这里。',
       'panel.noPreview': '暂无预览',
+      'open.error': '无法打开这个文件。',
+      'open.missingFile': '文件不存在或已被移动。',
+      'open.missingRecord': '没有找到这条成果记录。',
+      'open.invalidPath': '成果记录中的文件路径无效。',
+      'open.permission': '没有权限打开这个文件。',
+      'open.unsupported': '当前版本的 Finch 不支持预览文件。',
+      'open.openFailed': 'Finch 无法打开这个文件。',
       'panel.jumpToSession': '跳转到会话',
+      'ctx.open': '打开',
+      'ctx.copyPath': '复制文件路径',
+      'ctx.openSession': '跳转到对应会话',
+      'ctx.delete': '删除…',
+      'ctx.copied': '已复制路径',
       'panel.remove': '删除',
       'panel.annotate': '添加批注',
       'panel.annotateToast.title': '已添加批注',
@@ -592,10 +1021,53 @@
       'panel.deleteConfirm.title': '删除这份文件？',
       'panel.deleteConfirm.message': '「{title}」将从记录中移除，此操作无法撤销。',
       'panel.deleteConfirm.deleteFileLabel': '同时从磁盘删除该文件——永久删除，无法恢复。',
+      'panel.deleteConfirm.messageGroup': '「{title}」共交付 {n} 次，这些记录会一起移除，此操作无法撤销。',
+      'panel.deleteConfirm.deleteFilesLabel': '同时从磁盘删除这 {n} 个文件——永久删除，无法恢复。',
       'panel.deleteConfirm.confirm': '删除',
       'panel.deleteConfirm.cancel': '取消',
       'panel.deleteToast.title': '已删除',
-      'panel.deleteToast.fileError': '记录已删除，但磁盘上的文件删除失败'
+      'panel.deleteToast.fileError': '记录已删除，但磁盘上的文件删除失败',
+      'panel.group.none': '不分组',
+      'panel.group.space': '按项目（Space）',
+      'panel.group.folder': '按文件夹',
+      'panel.group.date': '按日期',
+      'panel.group.noSpace': '未归属 Space',
+      'panel.group.drag': '拖动调整{name}的顺序，也可用方向键移动',
+      'panel.group.today': '今天',
+      'panel.group.yesterday': '昨天',
+      'panel.group.thisWeek': '本周',
+      'panel.group.earlier': '更早',
+      'v.timeline': '成果流',
+      'v.grid': '卡片',
+      'panel.tab.starred': '收藏',
+      'search.placeholder': '搜索标题、说明',
+      'summary.text': '共 <b>{n}</b> 份成果，本周新增 <b>{w}</b> 份，来自 {p} 个项目',
+      'summary.textNoProject': '共 <b>{n}</b> 份成果，本周新增 <b>{w}</b> 份',
+      'summary.filtered': '筛选出 <b>{n}</b> 份，共 {total} 份',
+      'chip.allProjects': '全部项目',
+      'type.allWithCount': '全部类型',
+      'group.prefix': '分组：',
+      'day.weekdays': '周日,周一,周二,周三,周四,周五,周六',
+      'day.date': '{m}月{d}日 {w}',
+      'day.dateYear': '{y}年{m}月{d}日 {w}',
+      'day.meta': '{n} 份',
+      'day.copy': '复制当天成果',
+      'day.copied': '已复制当天成果',
+      'day.copyHeading': '{date} 成果',
+      'entry.versions': '交付 {n} 次',
+      'entry.hideVersions': '收起',
+      'entry.latest': '最新',
+      'entry.overwritten': '已被新一次交付覆盖',
+      'entry.missing': '文件已移动或删除',
+      'entry.images': '{n} 张图',
+      'entry.star': '收藏',
+      'entry.unstar': '取消收藏',
+      'ctx.star': '收藏',
+      'ctx.unstar': '取消收藏',
+      'ctx.copySummary': '复制成果摘要',
+      'ctx.summaryCopied': '已复制成果摘要',
+      'panel.emptyStarred': '还没有收藏的成果。<br>把重要的成果收藏起来，会集中放在这里。',
+      'panel.emptySearch': '没有找到与“{q}”相关的成果。'
     }
   };
 
@@ -625,10 +1097,9 @@
   // ── State ──────────────────────────────────────────────────────────────
   var deliveries = [];
   var currentSessionId = '';
-  // Single-select flat filter: 'all' | 'current' | 'image' | 'file'.
-  // 'current' is only offered when this page is hosted as a Session-scoped
-  // right-side Panel App — the appView sidebar entry has no session concept.
+  // Session scope and file type are independent filters.
   var filterMode = 'all';
+  var typeFilter = 'all';
   var userPickedTab = false;
   // The user's assistant name ("帕亚", usually) — injected by the backend
   // via env.assistantName, used in empty-state copy. Fallback before it
@@ -645,11 +1116,246 @@
 
   // ── DOM ────────────────────────────────────────────────────────────────
   var contentEl = document.getElementById('content');
-  var countEl = document.getElementById('count');
+  var summaryEl = document.getElementById('summary');
+  var searchEl = document.getElementById('search');
+  var viewToggleEl = document.getElementById('viewToggle');
+  var projectChipsEl = document.getElementById('projectChips');
+  var typeSelectEl = document.getElementById('typeSelect');
+  var groupWrapEl = document.getElementById('groupWrap');
   var tabsEl = document.getElementById('tabs');
   var titleEl = document.getElementById('title');
 
-  var TAB_ORDER = ['all', 'current', 'image', 'file'];
+  var TAB_ORDER = ['all', 'current', 'starred'];
+
+  // ── Timeline, search and filter state ──
+  var LS_VIEW = 'finch-delivery.viewMode';
+  var viewMode = 'timeline';
+  try { if (localStorage.getItem(LS_VIEW) === 'grid') viewMode = 'grid'; } catch (e) { /* ignore */ }
+  var searchQuery = '';
+  var projectFilter = 'all';
+  var expandedVersions = {};
+  var imageCache = {};      // filePath → data URL
+  var imagePending = {};    // filePath → true while a request is in flight
+  var seenEntryKeys = null; // null until first timeline paint (no entry animation then)
+
+  // ── Self-refresh when dist/panel.html changes ──
+  // Reloading the mini tool restarts only its backend; a page that is already
+  // open keeps running the old code. The backend reports a fingerprint of
+  // panel.html with every data push: the first one this page sees is its own,
+  // a later different one means the file was updated → reload once, keeping
+  // the reader's tab / search / filters / expanded entries / scroll position.
+  var LS_RESTORE = 'finch-delivery.restore';
+  var loadedPageBuild = '';
+  var restoreScrollY = 0;
+  try {
+    var restored = JSON.parse(sessionStorage.getItem(LS_RESTORE) || 'null');
+    sessionStorage.removeItem(LS_RESTORE);
+    if (restored) {
+      if (restored.tab) { filterMode = restored.tab; userPickedTab = !!restored.picked; }
+      searchQuery = restored.q || '';
+      searchEl.value = searchQuery;
+      projectFilter = restored.project || 'all';
+      typeFilter = restored.type || 'all';
+      expandedVersions = restored.expanded || {};
+      restoreScrollY = restored.y || 0;
+    }
+  } catch (e) { /* ignore */ }
+  function checkPageBuild(build) {
+    if (!build) return;
+    if (!loadedPageBuild) { loadedPageBuild = build; return; }
+    if (build === loadedPageBuild) return;
+    // Never pull an open dialog away from under the reader; the next push retries.
+    if (document.querySelector('.modal-overlay')) return;
+    try {
+      sessionStorage.setItem(LS_RESTORE, JSON.stringify({
+        tab: filterMode, picked: userPickedTab, q: searchQuery, project: projectFilter,
+        type: typeFilter, expanded: expandedVersions, y: window.scrollY || 0
+      }));
+    } catch (e) { /* ignore */ }
+    location.reload();
+  }
+  var TYPE_ORDER = ['all', 'image', 'excel', 'word', 'pdf', 'ppt', 'md', 'web', 'text', 'audio', 'video', 'archive', 'ebook', 'other'];
+
+  // ── Grouping ───────────────────────────────────────────────────────────
+  var GROUP_MODES = ['none', 'space', 'folder', 'date'];
+  var LS_GROUP = 'finch-delivery.groupMode';
+  var LS_COLLAPSED = 'finch-delivery.collapsed';
+  var LS_SPACE_ORDER = 'finch-delivery.spaceOrder';
+  var groupMode = 'none';
+  var collapsed = {};
+  var spaceOrder = [];
+  try {
+    var savedMode = localStorage.getItem(LS_GROUP);
+    if (GROUP_MODES.indexOf(savedMode) !== -1) groupMode = savedMode;
+    collapsed = JSON.parse(localStorage.getItem(LS_COLLAPSED) || '{}') || {};
+    var savedOrder = JSON.parse(localStorage.getItem(LS_SPACE_ORDER) || '[]');
+    if (Array.isArray(savedOrder)) spaceOrder = savedOrder.filter(function(key) { return typeof key === 'string'; });
+  } catch (e) { /* ignore */ }
+  function persistGroupState() {
+    try {
+      localStorage.setItem(LS_GROUP, groupMode);
+      localStorage.setItem(LS_COLLAPSED, JSON.stringify(collapsed));
+    } catch (e) { /* ignore */ }
+  }
+
+  // Known Spaces (id/name/directoryPath) — used to place old records that
+  // were saved before the Space fields existed, by matching file paths.
+  var spacesList = [];
+  var currentSpaceId = '';
+  var currentSpaceName = '';
+  function loadSpaces() {
+    try {
+      if (finchApi && finchApi.spaces && finchApi.spaces.list) {
+        Promise.resolve(finchApi.spaces.list()).then(function(list) {
+          spacesList = Array.isArray(list) ? list : [];
+          render();
+        }).catch(function() {});
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  var groupSelectEl = document.getElementById('groupBy');
+  groupSelectEl.addEventListener('change', function() {
+    groupMode = groupSelectEl.value;
+    persistGroupState();
+    render();
+  });
+  function renderGroupSelect() {
+    groupWrapEl.hidden = viewMode !== 'grid';
+    var html = '';
+    GROUP_MODES.forEach(function(m) {
+      html += '<option value="' + m + '"' + (m === groupMode ? ' selected' : '') + '>' + escapeHtml(t('group.prefix') + t('panel.group.' + m)) + '</option>';
+    });
+    groupSelectEl.innerHTML = html;
+  }
+
+  function normPath(p) { return String(p || '').replace(/\\/g, '/').replace(/\/+$/, ''); }
+  function dirOf(p) {
+    var n = normPath(p);
+    var i = n.lastIndexOf('/');
+    return i > 0 ? n.slice(0, i) : n;
+  }
+  function shortDir(d) {
+    var parts = d.split('/').filter(Boolean);
+    return parts.length <= 2 ? d : '…/' + parts.slice(-2).join('/');
+  }
+
+  // spaceId → name, learned by the backend from Panel opens (trusted).
+  var spaceNames = {};
+  function nameForId(id) {
+    if (!id) return '';
+    var s = spacesList.find(function(x) { return x.id === id; });
+    if (s) return s.alias || s.name;
+    if (id === currentSpaceId && currentSpaceName) return currentSpaceName;
+    return spaceNames[id] || '';
+  }
+  function spaceOf(r) {
+    // The Space ID is authoritative; stored names may be stale/wrong.
+    if (r.spaceId) {
+      // Older records can contain a name belonging to a different Space.
+      return { key: 'id:' + r.spaceId, label: nameForId(r.spaceId) || r.spaceId };
+    }
+    if (r.spaceName) {
+      var idByName = Object.keys(spaceNames).find(function(k) { return spaceNames[k] === r.spaceName; });
+      return { key: idByName ? 'id:' + idByName : 'name:' + r.spaceName, label: r.spaceName };
+    }
+    // Old record: a path folder named exactly like a Space (e.g. “…/Acme/report.md” in Space “Acme”).
+    var segs = normPath(r.filePath).split('/');
+    var known = Object.keys(spaceNames).map(function(k) { return { id: k, name: spaceNames[k] }; });
+    spacesList.forEach(function(s) {
+      if (!known.some(function(x) { return x.id === s.id; })) known.push({ id: s.id, name: s.alias || s.name });
+    });
+    for (var i = segs.length - 2; i >= 0; i--) {
+      var hit = known.find(function(x) { return x.name && x.name === segs[i]; });
+      if (hit) return { key: 'id:' + hit.id, label: hit.name };
+    }
+    // Old record: longest Space directory that contains the file wins.
+    var fp = normPath(r.filePath);
+    var best = null;
+    spacesList.forEach(function(s) {
+      var d = normPath(s.directoryPath);
+      if (d && (fp === d || fp.indexOf(d + '/') === 0)) {
+        if (!best || d.length > normPath(best.directoryPath).length) best = s;
+      }
+    });
+    if (best) return { key: 'id:' + best.id, label: best.alias || best.name };
+    return { key: '__none__', label: t('panel.group.noSpace'), last: true };
+  }
+
+  var DATE_ORDER = ['today', 'yesterday', 'thisWeek', 'earlier'];
+  function dateBucket(ts) {
+    var now = new Date();
+    var startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    var startYesterday = startToday - 86400000;
+    var dow = (now.getDay() + 6) % 7; // Monday = 0
+    var startWeek = startToday - dow * 86400000;
+    if (ts >= startToday) return 'today';
+    if (ts >= startYesterday) return 'yesterday';
+    if (ts >= startWeek) return 'thisWeek';
+    return 'earlier';
+  }
+
+  // Returns [{ key, label, title?, items }] — items already sorted desc.
+  function buildGroups(sorted) {
+    var map = {};
+    var order = [];
+    sorted.forEach(function(r) {
+      var g;
+      if (groupMode === 'space') {
+        g = spaceOf(r);
+      } else if (groupMode === 'folder') {
+        var d = dirOf(r.filePath);
+        g = { key: 'dir:' + d, label: shortDir(d), title: d };
+      } else {
+        var b = dateBucket(r.createdAt);
+        g = { key: 'date:' + b, label: t('panel.group.' + b), rank: DATE_ORDER.indexOf(b) };
+      }
+      if (!map[g.key]) {
+        map[g.key] = { key: g.key, label: g.label, title: g.title, last: !!g.last, rank: g.rank, items: [] };
+        order.push(map[g.key]);
+      }
+      map[g.key].items.push(r);
+    });
+    // Space/folder: newest activity first (insertion order, since sorted desc);
+    // date: fixed bucket order; "No Space" always last.
+    if (groupMode === 'date') order.sort(function(a, b) { return a.rank - b.rank; });
+    else order.sort(function(a, b) { return (a.last ? 1 : 0) - (b.last ? 1 : 0); });
+    if (groupMode === 'space' && spaceOrder.length) {
+      order.sort(function(a, b) {
+        var ai = spaceOrder.indexOf(a.key), bi = spaceOrder.indexOf(b.key);
+        return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi);
+      });
+    }
+    return order;
+  }
+
+  function moveSpaceGroup(key, target, after, visibleGroups) {
+    var visible = visibleGroups.map(function(g) { return g.key; });
+    if (key === target || visible.indexOf(key) < 0 || visible.indexOf(target) < 0) return false;
+    var reordered = visible.slice();
+    reordered.splice(reordered.indexOf(key), 1);
+    reordered.splice(reordered.indexOf(target) + (after ? 1 : 0), 0, key);
+    if (reordered.every(function(k, i) { return k === visible[i]; })) return false;
+    var current = buildGroups(deliveries.slice().sort(function(a, b) { return b.createdAt - a.createdAt; }))
+      .map(function(g) { return g.key; });
+    // Keep filtered and temporarily absent groups in their saved slots.
+    var all = spaceOrder.slice();
+    current.forEach(function(k) { if (all.indexOf(k) < 0) all.push(k); });
+    var next = 0;
+    all = all.map(function(k) { return visible.indexOf(k) < 0 ? k : reordered[next++]; });
+    if (next !== reordered.length) return false;
+    spaceOrder = all;
+    try { localStorage.setItem(LS_SPACE_ORDER, JSON.stringify(spaceOrder)); } catch (e) { /* ignore */ }
+    return true;
+  }
+
+  window.addEventListener('storage', function(e) {
+    if (e.key !== LS_SPACE_ORDER) return;
+    try {
+      var next = JSON.parse(e.newValue || '[]');
+      if (Array.isArray(next)) { spaceOrder = next.filter(function(k) { return typeof k === 'string'; }); render(); }
+    } catch (err) { /* ignore malformed preferences */ }
+  });
 
   function renderTabs() {
     var showCurrent = currentView === 'session' && !!currentSessionId;
@@ -657,7 +1363,12 @@
     TAB_ORDER.forEach(function(key) {
       if (key === 'current' && !showCurrent) return;
       var active = filterMode === key ? ' active' : '';
-      html += '<button class="tab' + active + '" data-filter="' + key + '">' + t('panel.tab.' + key) + '</button>';
+      var label = t('panel.tab.' + key);
+      if (key === 'starred') {
+        var starN = deliveries.filter(function(r) { return r.starred; }).length;
+        if (starN) label += ' ' + starN;
+      }
+      html += '<button class="tab' + active + '" data-filter="' + key + '">' + escapeHtml(label) + '</button>';
     });
     tabsEl.innerHTML = html;
     tabsEl.querySelectorAll('.tab').forEach(function(tab) {
@@ -667,6 +1378,23 @@
         render();
       });
     });
+  }
+
+  // Type filter as a compact select listing only types that actually exist
+  // in the current scope (with counts) — 14 mostly-empty chips were noise.
+  typeSelectEl.addEventListener('change', function() { typeFilter = typeSelectEl.value; render(); });
+  function renderTypeSelect() {
+    var counts = countUnitsBy(filterRecords({ skipType: true }), classifyFile);
+    if (typeFilter !== 'all' && !counts[typeFilter]) counts[typeFilter] = 0;
+    var html = '<option value="all">' + escapeHtml(t('type.allWithCount')) + '</option>';
+    TYPE_ORDER.forEach(function(k) {
+      if (k === 'all' || counts[k] === undefined) return;
+      html += '<option value="' + k + '"' + (typeFilter === k ? ' selected' : '') + '>' +
+        escapeHtml(t('panel.type.' + k)) + ' ' + counts[k] + '</option>';
+    });
+    typeSelectEl.innerHTML = html;
+    typeSelectEl.value = typeFilter;
+    typeSelectEl.setAttribute('aria-label', t('panel.type.label'));
   }
 
   function onSessionIdKnown(sessionId) {
@@ -781,23 +1509,52 @@
     return '<div class="preview-body">' + escapeHtml(src) + '</div>';
   }
 
-  function getFiltered() {
-    if (filterMode === 'current' && currentSessionId) {
-      return deliveries.filter(function(r) { return r.sessionId === currentSessionId; });
+  function classifyFile(r) {
+    // The extension corrects older records tagged as 'other' or with a wrong type.
+    var name = String(r.fileName || r.filePath || '').split(/[\\/]/).pop().toLowerCase();
+    var dot = name.lastIndexOf('.');
+    var ext = dot > 0 ? name.slice(dot + 1) : '';
+    var extensions = {
+      image: ['png','jpg','jpeg','gif','webp','svg','bmp','tif','tiff','heic','heif','avif','ico'],
+      excel: ['xls','xlsx','xlsm','xlsb','csv','tsv','ods'],
+      word: ['doc','docx','docm','odt','rtf'],
+      pdf: ['pdf'], ppt: ['ppt','pptx','pptm','odp'],
+      md: ['md','markdown','mdown'], web: ['html','htm'],
+      text: ['txt','text'], audio: ['mp3','wav','m4a','aac','flac','ogg','opus','aiff'],
+      video: ['mp4','mov','m4v','avi','mkv','webm'],
+      archive: ['zip','rar','7z','tar','gz','bz2','xz'], ebook: ['epub','mobi','azw','azw3']
+    };
+    var types = Object.keys(extensions);
+    for (var i = 0; i < types.length; i++) {
+      if (extensions[types[i]].indexOf(ext) !== -1) return types[i];
     }
-    if (filterMode === 'image') {
-      return deliveries.filter(function(r) { return r.fileType === 'image'; });
-    }
-    if (filterMode === 'file') {
-      return deliveries.filter(function(r) { return r.fileType !== 'image'; });
-    }
-    return deliveries;
+    return TYPE_ORDER.indexOf(r.fileType) > 0 ? r.fileType : 'other';
   }
 
+  // Scope (tab) → search → project → type. Chip/select counts call this with
+  // their own dimension skipped so each shows what picking it would yield.
+  function filterRecords(opts) {
+    opts = opts || {};
+    var q = opts.skipSearch ? '' : searchQuery.trim().toLowerCase();
+    return deliveries.filter(function(r) {
+      if (filterMode === 'current' && currentSessionId && r.sessionId !== currentSessionId) return false;
+      if (filterMode === 'starred' && !r.starred) return false;
+      if (q) {
+        var hay = [r.title, r.description, r.fileName, spaceOf(r).label].join('\n').toLowerCase();
+        if (hay.indexOf(q) === -1) return false;
+      }
+      if (!opts.skipProject && projectFilter !== 'all' && spaceOf(r).key !== projectFilter) return false;
+      if (!opts.skipType && typeFilter !== 'all' && classifyFile(r) !== typeFilter) return false;
+      return true;
+    });
+  }
+  function getFiltered() { return filterRecords(); }
+
   function emptyTextKey() {
+    if (searchQuery.trim()) return 'panel.emptySearch';
+    if (filterMode === 'starred') return 'panel.emptyStarred';
+    if (typeFilter !== 'all') return 'panel.emptyType';
     if (filterMode === 'current') return 'panel.emptyCurrent';
-    if (filterMode === 'image') return 'panel.emptyImage';
-    if (filterMode === 'file') return 'panel.emptyFile';
     return 'panel.emptyAll';
   }
 
@@ -873,15 +1630,20 @@
     var prevCardRects = cardRects;
     titleEl.textContent = t('panel.title');
     renderTabs();
+    renderViewToggle();
+    renderProjectChips();
+    renderTypeSelect();
+    renderGroupSelect();
+    searchEl.placeholder = t('search.placeholder');
 
     var filtered = getFiltered();
-    countEl.textContent = t('panel.count', { count: filtered.length });
+    renderSummary(filtered);
 
     if (filtered.length === 0) {
       contentEl.innerHTML =
         '<div class="empty">' +
-        '<div class="empty-icon">📦</div>' +
-        '<div class="empty-text">' + t(emptyTextKey(), { finch: finchName }) + '</div>' +
+        '<div class="empty-icon">' + EMPTY_ICON + '</div>' +
+        '<div class="empty-text">' + t(emptyTextKey(), { finch: finchName, q: escapeHtml(searchQuery.trim()) }) + '</div>' +
         '</div>';
       // No cards to animate, but keep the rect cache consistent so the
       // next render FLIPs from where the cards actually were.
@@ -892,12 +1654,32 @@
     // Sort by createdAt descending
     var sorted = filtered.slice().sort(function(a, b) { return b.createdAt - a.createdAt; });
 
-    var html = '<div class="grid">';
-    sorted.forEach(function(r) {
-      var isCurrent = r.sessionId === currentSessionId;
-      var sessionLabel = escapeHtml(r.sessionTitle || (r.sessionId ? r.sessionId.slice(0, 8) : t('panel.unknownSession')));
+    if (viewMode === 'timeline') {
+      renderTimeline(sorted);
+      captureCardRects();
+      return;
+    }
+    seenEntryKeys = null;
 
-      html += '<div class="card" data-id="' + r.id + '">';
+    // One card per deliverable: repeat deliveries of the same file fold into
+    // the card of the newest one and are listed when the card is expanded.
+    var gridUnits = groupVersions(sorted);
+    indexUnits(gridUnits);
+    var heads = gridUnits.map(function(u) { return u.record; });
+
+    function cardHtml(r) {
+      var unit = unitIndex[r.id];
+      var multi = !!unit && unit.versions.length > 1, open = multi && !!expandedVersions[unit.key];
+      var starredCard = unit ? unitStarred(unit) : !!r.starred;
+      // Use the same effective type for the card badge and its filter.
+      r = Object.assign({}, r, { fileType: classifyFile(r) });
+      var html = '';
+      var isCurrent = r.sessionId === currentSessionId;
+      // Records carry no session title; a raw id prefix meant nothing to people.
+      var cardSpace = spaceOf(r);
+      var sessionLabel = escapeHtml(r.sessionTitle || (!cardSpace.last ? cardSpace.label : (r.sessionId ? r.sessionId.slice(0, 8) : t('panel.unknownSession'))));
+
+      html += '<div class="card' + (multi ? ' has-versions' : '') + (open ? ' expanded' : '') + '" data-id="' + r.id + '">';
 
       html += '<div class="card-actions-overlay">';
       // Composer annotations only make sense inside the right-side Panel
@@ -921,47 +1703,144 @@
       html += '<div class="' + previewClass + '">' + buildPreviewHtml(r) + '</div>';
 
       html += '<div class="card-footer">';
-      html += '<div class="card-title">' + escapeHtml(r.title) + '</div>';
+      html += '<div class="card-title">' + (starredCard ? '<span class="star-mark">★</span>' : '') + escapeHtml(r.title) + '</div>';
       html += '<div class="card-meta">';
-      html += '<span class="card-time">' + formatRelativeTime(r.createdAt) + '</span>';
+      html += '<span class="card-time">' + formatRelativeTime(r.createdAt) + (multi ? ' · ' + versionsToggleHtml(unit) : '') + '</span>';
       if (filterMode !== 'current' && !isCurrent) {
         html += '<span class="session-tag">' + sessionLabel + '</span>';
       } else {
         html += '<span class="type-pill ' + r.fileType + '">' + r.fileType + '</span>';
       }
       html += '</div>';
+      if (open) html += versionListHtml(unit);
       html += '</div>';
 
       html += '</div>';
-    });
-    html += '</div>';
+      return html;
+    }
+
+    var html = '';
+    if (groupMode === 'none') {
+      html = '<div class="grid">' + heads.map(cardHtml).join('') + '</div>';
+    } else {
+      var visibleGroups = buildGroups(heads);
+      visibleGroups.forEach(function(g) {
+        var ck = groupMode + '|' + g.key;
+        html += '<div class="group' + (collapsed[ck] ? ' collapsed' : '') + '">';
+        html += '<div class="group-heading"' + (groupMode === 'space' ? ' draggable="true" data-drag-group="' + escapeHtml(g.key) + '"' : '') + '>';
+        if (groupMode === 'space') {
+          var dragLabel = escapeHtml(t('panel.group.drag', { name: g.label }));
+          html += '<button type="button" class="group-drag-handle" data-drag-handle="' + escapeHtml(g.key) + '" aria-label="' + dragLabel + '" title="' + dragLabel + '">⠿</button>';
+        }
+        html += '<button type="button" class="group-header" data-group-key="' + escapeHtml(ck) + '"' +
+          ' aria-expanded="' + (!collapsed[ck]) + '"' + (g.title ? ' title="' + escapeHtml(g.title) + '"' : '') + '>';
+        html += '<span class="chev">▾</span>';
+        html += '<span class="group-label">' + escapeHtml(g.label) + '</span>';
+        html += '<span class="group-count">' + g.items.length + '</span>';
+        html += '</button>';
+        html += '</div>';
+        html += '<div class="grid">' + g.items.map(cardHtml).join('') + '</div>';
+        html += '</div>';
+      });
+    }
     contentEl.innerHTML = html;
+
+    contentEl.querySelectorAll('[data-group-key]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var ck = btn.dataset.groupKey;
+        if (collapsed[ck]) delete collapsed[ck]; else collapsed[ck] = true;
+        persistGroupState();
+        btn.closest('.group').classList.toggle('collapsed', !!collapsed[ck]);
+        btn.setAttribute('aria-expanded', String(!collapsed[ck]));
+        captureCardRects();
+      });
+    });
+
+    var draggedSpaceKey = '';
+    function clearDropIndicators() {
+      contentEl.querySelectorAll('[data-drag-group]').forEach(function(row) {
+        row.classList.remove('drop-before', 'drop-after');
+      });
+    }
+    contentEl.querySelectorAll('[data-drag-group]').forEach(function(row) {
+      row.addEventListener('dragstart', function(e) {
+        draggedSpaceKey = row.dataset.dragGroup;
+        row.classList.add('dragging');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', draggedSpaceKey);
+        }
+      });
+      row.addEventListener('dragover', function(e) {
+        if (!draggedSpaceKey || draggedSpaceKey === row.dataset.dragGroup) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        clearDropIndicators();
+        var rect = row.getBoundingClientRect();
+        row.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drop-before' : 'drop-after');
+      });
+      row.addEventListener('dragleave', function(e) {
+        if (!row.contains(e.relatedTarget)) row.classList.remove('drop-before', 'drop-after');
+      });
+      row.addEventListener('drop', function(e) {
+        if (!draggedSpaceKey || draggedSpaceKey === row.dataset.dragGroup) return;
+        e.preventDefault();
+        var rect = row.getBoundingClientRect();
+        var changed = moveSpaceGroup(draggedSpaceKey, row.dataset.dragGroup, e.clientY >= rect.top + rect.height / 2, visibleGroups);
+        draggedSpaceKey = '';
+        clearDropIndicators();
+        if (changed) render();
+      });
+      row.addEventListener('dragend', function() {
+        draggedSpaceKey = '';
+        row.classList.remove('dragging');
+        clearDropIndicators();
+      });
+    });
+    contentEl.querySelectorAll('[data-drag-handle]').forEach(function(handle) {
+      handle.addEventListener('keydown', function(e) {
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        var key = handle.dataset.dragHandle;
+        var index = visibleGroups.findIndex(function(g) { return g.key === key; });
+        var target = visibleGroups[index + (e.key === 'ArrowUp' ? -1 : 1)];
+        if (!target || !moveSpaceGroup(key, target.key, e.key === 'ArrowDown', visibleGroups)) return;
+        render();
+        contentEl.querySelectorAll('[data-drag-handle]').forEach(function(next) {
+          if (next.dataset.dragHandle === key) next.focus();
+        });
+      });
+    });
 
     // Attach event listeners
     var cards = contentEl.querySelectorAll('.card');
     cards.forEach(function(card) {
       var id = card.dataset.id;
 
-      // Card click → open the file in Finch's native file preview
+      // Card click → one delivery: open it; several: expand / collapse the
+      // list, where each delivery row opens its own file.
       card.addEventListener('click', function(e) {
         // Don't trigger if clicking a button or link
         if (e.target.closest('.btn-icon') || e.target.closest('a')) return;
+        if (window.getSelection && String(window.getSelection())) return;
+        var row = e.target.closest('[data-tl-open]');
+        if (row) { openRecord(row.getAttribute('data-tl-open')); return; }
+        if (e.target.closest('.entry-history')) return;
+        var unit = unitIndex[id];
+        if (unit && unit.versions.length > 1) { toggleExpanded(unit.key); return; }
 
         var record = deliveries.find(function(r) { return r.id === id; });
         if (!record || !record.filePath) return;
 
-        // In Appview, ctx.ui.openFilePreview() would open the file in the
-        // right-side Panel — a surface Appview doesn't render — so nothing
-        // visibly happens. Push it onto this App View's own navigation
-        // stack instead. Falls back to the old backend round trip when
-        // running as a right-Panel App instance (currentView !== 'appView').
-        if (currentView === 'appView' && finchApi && finchApi.appView && finchApi.appView.openPreview) {
-          finchApi.appView.openPreview(record.filePath).catch(function (err) {
-            console.error('[finch-delivery] appView.openPreview failed:', err);
-          });
-        } else if (finchApi) {
-          finchApi.postMessage({ type: 'openPreview', filePath: record.filePath });
-        }
+        openRecord(record.id);
+      });
+
+      // Right click → context menu (a delivery row → just that delivery)
+      card.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        var row = e.target.closest('[data-tl-open]');
+        var record = findRecord(row ? row.getAttribute('data-tl-open') : id);
+        if (record) showContextMenu(record, e.clientX, e.clientY, row ? null : unitIndex[id]);
       });
     });
 
@@ -1016,19 +1895,13 @@
         e.stopPropagation();
         var id = btn.dataset.remove;
         var record = deliveries.find(function(r) { return r.id === id; });
-        if (record) showDeleteModal(record);
+        if (record) showDeleteModal(record, unitIndex[id]);
       });
     });
 
     // Image thumbnails — request the on-demand bytes for every image card so
     // the backend reads the local file and we can slot it into <img>.
-    var imageSlots = contentEl.querySelectorAll('.preview-image');
-    imageSlots.forEach(function(slot) {
-      var filePath = slot.getAttribute('data-image-path');
-      if (filePath && finchApi) {
-        finchApi.postMessage({ type: 'requestImage', filePath: filePath });
-      }
-    });
+    requestThumbs();
 
     // Reflow motion: ease surviving cards from their previous rects and
     // cache the new layout for the next render / resize FLIP.
@@ -1036,18 +1909,630 @@
     captureCardRects();
   }
 
+  // ── Opening files ──────────────────────────────────────────────────────
+  // The page only ever sends record ids; the backend resolves the trusted
+  // path from the stored record and replies with an `openResult`.
+  var openRequestSequence = 0;
+  var pendingOpenRequest = '';
+  var openRequestTimer = null;
+  function showOpenError(reason) {
+    var el = document.getElementById('openError');
+    var known = ['missingFile', 'missingRecord', 'invalidPath', 'permission', 'unsupported', 'openFailed'];
+    el.textContent = t(known.indexOf(reason) >= 0 ? 'open.' + reason : 'open.error');
+    el.hidden = false;
+  }
+  // Click → Finch's built-in file preview. App View (the sidebar entry) has
+  // no Panel scope for the backend's ctx.ui.openFilePreview(), so it uses the
+  // page-side API, which must run inside this click's user gesture — no
+  // backend round trip before it.
+  function openRecord(id) {
+    var r = findRecord(id);
+    if (!r) return;
+    document.getElementById('openError').hidden = true;
+    if (r.missing) { showOpenError('missingFile'); return; }
+    if (currentView === 'appView' && finchApi && finchApi.appView && typeof finchApi.appView.openPreview === 'function') {
+      try {
+        Promise.resolve(finchApi.appView.openPreview(r.filePath)).catch(function(err) {
+          console.error('[finch-delivery] appView.openPreview failed:', err);
+          showOpenError('openFailed');
+        });
+      } catch (err) { showOpenError('openFailed'); }
+      return;
+    }
+    sendOpenRequest('openPreview', id);
+  }
+  function sendOpenRequest(type, id) {
+    clearTimeout(openRequestTimer);
+    var requestId = type + '-' + Date.now() + '-' + (++openRequestSequence);
+    pendingOpenRequest = requestId;
+    openRequestTimer = setTimeout(function() {
+      if (pendingOpenRequest === requestId) { pendingOpenRequest = ''; showOpenError(); }
+    }, 20000);
+    try {
+      if (!finchApi || !finchApi.postMessage) throw new Error('bridge unavailable');
+      var sent = finchApi.postMessage({ type: type, id: id, requestId: requestId });
+      if (sent && typeof sent.catch === 'function') sent.catch(function() {
+        if (pendingOpenRequest === requestId) { clearTimeout(openRequestTimer); pendingOpenRequest = ''; showOpenError(); }
+      });
+    } catch (err) { clearTimeout(openRequestTimer); pendingOpenRequest = ''; showOpenError(); }
+  }
+
+  // ══ Timeline helpers ═══════════════════════════════════════════════════
+  var SVG_OPEN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
+  var LIST_ICON = SVG_OPEN + '<path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></svg>';
+  var GRID_ICON = SVG_OPEN + '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>';
+  var STAR_PATH = '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>';
+  var STAR_ICON = SVG_OPEN + STAR_PATH + '</svg>';
+  var STAR_FILLED_ICON = SVG_OPEN.replace('fill="none"', 'fill="currentColor"') + STAR_PATH + '</svg>';
+  var EMPTY_ICON = '<span style="display:inline-block;width:40px;height:40px">' + SVG_OPEN.replace('<svg ', '<svg width="40" height="40" ') + '<rect width="8" height="18" x="3" y="3" rx="1"/><path d="M7 3v18"/><path d="M20.4 18.9c.2.5-.1 1.1-.6 1.3l-1.9.7c-.5.2-1.1-.1-1.3-.6L11.1 5.1c-.2-.5.1-1.1.6-1.3l1.9-.7c.5-.2 1.1.1 1.3.6Z"/></svg></span>';
+
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function hhmm(ts) { var d = new Date(ts); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+  function mdhm(ts) { var d = new Date(ts); return pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + hhmm(ts); }
+  function dayKey(ts) { var d = new Date(ts); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  function startOfWeek() {
+    var now = new Date();
+    var st = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return st - ((now.getDay() + 6) % 7) * 86400000;
+  }
+  function listJoin(arr) { return arr.join(lang === 'zh' ? '、' : ', '); }
+  function colon() { return lang === 'zh' ? '：' : ': '; }
+  function extOf(r) {
+    var name = String(r.fileName || r.filePath || '');
+    var dot = name.lastIndexOf('.');
+    var ext = dot > 0 ? name.slice(dot + 1) : '';
+    return (ext && ext.length <= 5 ? ext : classifyFile(r)).toUpperCase();
+  }
+  function plainPreview(md) {
+    if (!md) return '';
+    return String(md).split('\n').filter(function(l) { return l.trim() && !/^#{1,6}\s/.test(l); })
+      .join(' ').replace(/[*_`>|#-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+  }
+  function findRecord(id) { return deliveries.find(function(r) { return r.id === id; }); }
+
+  // One deliverable = one entry, however often it was delivered. The exact
+  // path always matches, even across sessions. A document delivered again
+  // under the same name in the same session is the same deliverable wherever
+  // it was written (run/, run-v2/ …); an image only when the path matches,
+  // since an image re-exported into another folder (e.g. a redacted copy) is
+  // a separate deliverable. Mirrors deliverableKey() in index.ts.
+  function versionKeys(r) {
+    var keys = ['p:' + normPath(r.filePath)];
+    if (r.sessionId && classifyFile(r) !== 'image') keys.push('s:' + r.sessionId + '|' + String(r.fileName || '').toLowerCase());
+    return keys;
+  }
+  // sorted newest first → [{ kind:'single', key, record (newest), versions[] }]
+  function groupVersions(sorted) {
+    var byKey = {}, units = [];
+    sorted.forEach(function(r) {
+      var keys = versionKeys(r);
+      var u = null;
+      keys.forEach(function(k) { if (!u && byKey[k]) u = byKey[k]; });
+      if (u) u.versions.push(r);
+      else { u = { kind: 'single', key: keys[keys.length - 1], record: r, versions: [r] }; units.push(u); }
+      keys.forEach(function(k) { byKey[k] = u; });
+    });
+    // Same-file revisions the backend folded into one record (record.history).
+    // They point at the current file, so they are listed but not openable.
+    units.forEach(function(u) {
+      u.records = u.versions.slice(); // real records only: star / delete act on these
+      var extra = [];
+      u.versions.forEach(function(v) {
+        (Array.isArray(v.history) ? v.history : []).forEach(function(h) {
+          extra.push({ id: v.id, title: h.title || v.title, description: h.description || '', createdAt: h.recordedAt || 0, fileName: v.fileName, isRevision: true });
+        });
+      });
+      if (extra.length) {
+        u.versions = u.versions.concat(extra).sort(function(a, b) { return b.createdAt - a.createdAt; });
+      }
+    });
+    return units;
+  }
+  function uniqueCount(list) { return groupVersions(list).length; }
+
+  // sorted (newest first) → units: { kind:'single', record, versions[] } or
+  // { kind:'album', items[] (single units) } for a burst of images from one
+  // session and folder.
+  function buildUnits(sorted) {
+    var units = groupVersions(sorted);
+    var out = [];
+    units.forEach(function(u) {
+      var r = u.record;
+      var prev = out[out.length - 1];
+      if (classifyFile(r) === 'image' && prev) {
+        var head = prev.kind === 'album' ? prev.items[prev.items.length - 1].record : prev.record;
+        var joinable = (prev.kind === 'album' || classifyFile(prev.record) === 'image') &&
+          head.sessionId === r.sessionId && dirOf(head.filePath) === dirOf(r.filePath) &&
+          head.createdAt - r.createdAt <= 10 * 60000 && dayKey(head.createdAt) === dayKey(r.createdAt);
+        if (joinable) {
+          if (prev.kind === 'album') prev.items.push(u);
+          else out[out.length - 1] = { kind: 'album', key: 'a:' + prev.key, items: [prev, u] };
+          return;
+        }
+      }
+      out.push(u);
+    });
+    return out;
+  }
+  function unitTime(u) { return u.kind === 'album' ? u.items[0].record.createdAt : u.record.createdAt; }
+  function unitRecords(u) { return u.kind === 'album' ? u.items.map(function(it) { return it.record; }) : [u.record]; }
+  function unitStarred(u) { return !!u && u.records.some(function(r) { return r.starred; }); }
+  // Units per type / project for the filter counts: one deliverable, one count.
+  function countUnitsBy(list, keyFn) {
+    var counts = {};
+    groupVersions(list.slice().sort(function(a, b) { return b.createdAt - a.createdAt; })).forEach(function(u) {
+      var k = keyFn(u.record);
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    return counts;
+  }
+
+  // Shared prefix (+ a bracketed shared suffix) of a batch of image titles:
+  // "Sales chart 1 (redacted)" … "Sales chart 5 (redacted)" → "Sales chart (redacted)".
+  function albumTitle(items) {
+    var titles = items.map(function(r) { return String(r.title || ''); });
+    if (titles.length < 2) return titles[0] || '';
+    var pre = titles.reduce(function(a, b) { var i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++; return a.slice(0, i); });
+    var suf = titles.reduce(function(a, b) { var i = 0; while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i++; return a.slice(a.length - i); });
+    var minLen = Math.min.apply(null, titles.map(function(s) { return s.length; }));
+    if (pre.length + suf.length > minLen) suf = '';
+    pre = pre.replace(/[\s\d:：·\-_—、,，（(【\[]+$/, '');
+    suf = suf.replace(/^[\d\s]+/, '');
+    if (!/^[（(【\[]/.test(suf)) suf = '';
+    // Half-width brackets after a word need the space the digits took with them.
+    var gap = /[A-Za-z0-9)\]]$/.test(pre) && /^[(\[]/.test(suf) ? ' ' : '';
+    return pre.length < 2 ? titles[titles.length - 1] : pre + gap + suf;
+  }
+
+  function dayLabel(ts) {
+    var d = new Date(ts), now = new Date();
+    var wd = t('day.weekdays').split(',')[d.getDay()];
+    var full = t(d.getFullYear() === now.getFullYear() ? 'day.date' : 'day.dateYear',
+      { m: d.getMonth() + 1, d: d.getDate(), y: d.getFullYear(), w: wd });
+    var b = dateBucket(ts);
+    if (b === 'today' || b === 'yesterday') return { title: t('panel.group.' + b), sub: full };
+    return { title: full, sub: '' };
+  }
+
+  // ── Header pieces ──
+  function renderViewToggle() {
+    viewToggleEl.innerHTML = [['timeline', LIST_ICON], ['grid', GRID_ICON]].map(function(v) {
+      var on = viewMode === v[0];
+      return '<button type="button" class="view-btn' + (on ? ' active' : '') + '" data-view="' + v[0] +
+        '" aria-pressed="' + on + '" title="' + escapeHtml(t('v.' + v[0])) + '">' + v[1] +
+        '<span>' + escapeHtml(t('v.' + v[0])) + '</span></button>';
+    }).join('');
+  }
+  viewToggleEl.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-view]');
+    if (!btn || btn.dataset.view === viewMode) return;
+    viewMode = btn.dataset.view;
+    try { localStorage.setItem(LS_VIEW, viewMode); } catch (err) { /* ignore */ }
+    render();
+  });
+
+  function renderProjectChips() {
+    var base = filterRecords({ skipProject: true }).slice().sort(function(a, b) { return b.createdAt - a.createdAt; });
+    var map = {}, order = [];
+    groupVersions(base).forEach(function(u) { // one deliverable, one count
+      var s = spaceOf(u.record);
+      if (!map[s.key]) { map[s.key] = { key: s.key, label: s.label, last: !!s.last, n: 0 }; order.push(map[s.key]); }
+      map[s.key].n++;
+    });
+    if (projectFilter !== 'all' && !map[projectFilter]) {
+      var any = deliveries.find(function(r) { return spaceOf(r).key === projectFilter; });
+      if (!any) projectFilter = 'all';
+      else order.push({ key: projectFilter, label: spaceOf(any).label, n: 0 });
+    }
+    order.sort(function(a, b) { return (a.last ? 1 : 0) - (b.last ? 1 : 0); });
+    if (spaceOrder.length) {
+      order.sort(function(a, b) {
+        var ai = spaceOrder.indexOf(a.key), bi = spaceOrder.indexOf(b.key);
+        return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi);
+      });
+    }
+    if (order.length <= 1 && projectFilter === 'all') { projectChipsEl.innerHTML = ''; return; }
+    var html = '<button type="button" class="chip' + (projectFilter === 'all' ? ' active' : '') + '" data-project="all">' +
+      escapeHtml(t('chip.allProjects')) + '</button>';
+    order.forEach(function(g) {
+      html += '<button type="button" class="chip' + (projectFilter === g.key ? ' active' : '') + '" data-project="' +
+        escapeHtml(g.key) + '" title="' + escapeHtml(g.label) + '">' + escapeHtml(g.label) +
+        '<span class="n">' + g.n + '</span></button>';
+    });
+    projectChipsEl.innerHTML = html;
+  }
+  projectChipsEl.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-project]');
+    if (!btn) return;
+    var key = btn.dataset.project;
+    projectFilter = (key === projectFilter && key !== 'all') ? 'all' : key;
+    render();
+  });
+
+  function renderSummary(filtered) {
+    var narrowed = !!searchQuery.trim() || projectFilter !== 'all' || typeFilter !== 'all';
+    if (narrowed) {
+      var scope = filterRecords({ skipProject: true, skipType: true, skipSearch: true });
+      summaryEl.innerHTML = t('summary.filtered', { n: uniqueCount(filtered), total: uniqueCount(scope) });
+      return;
+    }
+    if (!filtered.length) { summaryEl.innerHTML = ''; return; }
+    var sow = startOfWeek();
+    var w = uniqueCount(filtered.filter(function(r) { return r.createdAt >= sow; }));
+    var projects = {};
+    filtered.forEach(function(r) { var s = spaceOf(r); if (!s.last) projects[s.key] = 1; });
+    var p = Object.keys(projects).length;
+    summaryEl.innerHTML = t(p > 1 ? 'summary.text' : 'summary.textNoProject', { n: uniqueCount(filtered), w: w, p: p });
+  }
+
+  searchEl.addEventListener('input', function() { searchQuery = searchEl.value; render(); });
+  searchEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && searchEl.value) { e.stopPropagation(); searchEl.value = ''; searchQuery = ''; render(); }
+  });
+
+  // ── Timeline rendering ──
+  var lastDays = {};
+  // head record id → its single unit (all deliveries of that file), rebuilt on
+  // every render; star / delete on an entry act on the whole unit.
+  var unitIndex = {};
+  function indexUnits(units) {
+    unitIndex = {};
+    units.forEach(function(x) {
+      (x.kind === 'album' ? x.items : [x]).forEach(function(s) { unitIndex[s.record.id] = s; });
+    });
+  }
+  function imageSlotHtml(r) {
+    return '<div class="preview-image"' + (r.missing ? '' : ' data-image-path="' + escapeHtml(r.filePath || '') + '"') + '>' +
+      '<div class="preview-image-slot"><span class="glyph">' + escapeHtml(extOf(r)) + '</span></div></div>';
+  }
+  function iconBtn(attr, id, icon, label, extra) {
+    return '<button type="button" class="btn-icon' + (extra || '') + '" ' + attr + '="' + escapeHtml(id) + '" aria-label="' +
+      escapeHtml(label) + '">' + icon + '<span class="btn-tooltip">' + escapeHtml(label) + '</span></button>';
+  }
+  function actionsHtml(r, albumMode, starred) {
+    var h = '<div class="entry-actions">';
+    if (!albumMode) h += iconBtn('data-tl-star', r.id, starred ? STAR_FILLED_ICON : STAR_ICON, t(starred ? 'entry.unstar' : 'entry.star'), starred ? ' on' : '');
+    if (!albumMode && currentView !== 'appView') h += iconBtn('data-tl-annotate', r.id, ANNOTATE_ICON, t('panel.annotate'));
+    if (r.sessionId) h += iconBtn('data-tl-session', r.id, JUMP_ICON, t('panel.jumpToSession'));
+    if (!albumMode) h += iconBtn('data-tl-remove', r.id, REMOVE_ICON, t('panel.remove'), ' danger');
+    return h + '</div>';
+  }
+  function projectMeta(r) {
+    var sp = spaceOf(r);
+    if (projectFilter !== 'all' || sp.last) return '';
+    return '<span class="meta-project" title="' + escapeHtml(sp.label) + '">' + escapeHtml(sp.label) + '</span>';
+  }
+  function isNewUnit(u) {
+    return !!seenEntryKeys && !seenEntryKeys[u.key] && Date.now() - unitTime(u) < 120000;
+  }
+
+  // Shown when an entry with several deliveries is expanded: every delivery,
+  // newest first; each one that still has its own file opens on click.
+  function lastDir(r) { return dirOf(r.filePath).split('/').pop() || ''; }
+  function versionListHtml(u) {
+    var dirs = {};
+    u.records.forEach(function(v) { dirs[dirOf(v.filePath)] = 1; });
+    var showDir = Object.keys(dirs).length > 1;
+    var h = '<div class="entry-history">';
+    u.versions.forEach(function(v, i) {
+      var openable = !v.isRevision && !v.missing;
+      var thumb = !v.isRevision && classifyFile(v) === 'image';
+      h += '<div class="ver' + (thumb ? ' has-thumb' : '') + '"' + (openable
+        ? ' data-tl-open="' + escapeHtml(v.id) + '" title="' + escapeHtml(v.filePath || '') + '"'
+        : ' data-revision="1"') + '>';
+      h += '<span class="ver-time">' + mdhm(v.createdAt) + '</span><div class="ver-body">';
+      h += '<div class="ver-title">' + escapeHtml(v.title) + (i === 0 ? '<span class="ver-tag">' + escapeHtml(t('entry.latest')) + '</span>' : '') + '</div>';
+      if (v.description) h += '<div class="ver-desc">' + escapeHtml(v.description) + '</div>';
+      var note = v.isRevision ? t('entry.overwritten') : v.missing ? t('entry.missing') : (showDir ? lastDir(v) : '');
+      if (note) h += '<div class="ver-note">' + escapeHtml(note) + '</div>';
+      h += '</div>';
+      if (thumb) h += '<div class="ver-thumb">' + imageSlotHtml(v) + '</div>';
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
+  function versionsToggleHtml(u) {
+    var label = expandedVersions[u.key] ? t('entry.hideVersions') + ' ▴' : t('entry.versions', { n: u.versions.length }) + ' ▾';
+    return '<button type="button" class="meta-versions" data-tl-versions="' + escapeHtml(u.key) + '" aria-expanded="' +
+      !!expandedVersions[u.key] + '">' + escapeHtml(label) + '</button>';
+  }
+  function toggleExpanded(key) {
+    if (!key) return;
+    if (expandedVersions[key]) delete expandedVersions[key]; else expandedVersions[key] = true;
+    render();
+  }
+
+  function entryHtml(u) {
+    var r = u.record, type = classifyFile(r);
+    var multi = u.versions.length > 1, open = multi && !!expandedVersions[u.key];
+    var starred = unitStarred(u);
+    var cls = 'entry' + (starred ? ' starred' : '') + (r.missing ? ' missing' : '') + (isNewUnit(u) ? ' is-new' : '');
+    var h = '<article class="' + cls + '">';
+    h += '<div class="entry-time">' + hhmm(r.createdAt) + '</div><div class="entry-rail"></div>';
+    // Several deliveries → the card toggles the list; one → the card opens it.
+    h += '<div class="entry-card' + (multi ? ' expandable' : '') + (open ? ' expanded' : '') + '" data-tl-card="' + escapeHtml(r.id) + '"' +
+      (multi ? ' data-tl-toggle="' + escapeHtml(u.key) + '"' : ' data-tl-open="' + escapeHtml(r.id) + '"') + '>';
+    h += '<div class="entry-text">';
+    h += '<div class="entry-title">' + (starred ? '<span class="star-mark">★</span>' : '') + escapeHtml(r.title) + '</div>';
+    var desc = r.description || plainPreview(r.textPreview);
+    if (desc) h += '<div class="entry-desc">' + escapeHtml(desc) + '</div>';
+    h += '<div class="entry-meta">';
+    h += '<span class="meta-time">' + hhmm(r.createdAt) + '</span>';
+    h += projectMeta(r);
+    h += '<span class="meta-file" title="' + escapeHtml(r.filePath || '') + '"><span class="ext">' + escapeHtml(extOf(r)) + '</span>' + escapeHtml(r.fileName || '') + '</span>';
+    if (multi) h += versionsToggleHtml(u);
+    if (r.missing) h += '<span class="meta-missing">' + escapeHtml(t('entry.missing')) + '</span>';
+    h += actionsHtml(r, false, starred);
+    h += '</div>';
+    if (open) h += versionListHtml(u);
+    h += '</div>';
+    h += type === 'image' ? '<div class="entry-thumb">' + imageSlotHtml(r) + '</div>' : '<div class="doc-tile">' + escapeHtml(extOf(r)) + '</div>';
+    h += '</div></article>';
+    return h;
+  }
+
+  function albumStripHtml(records) {
+    return '<div class="album-strip">' + records.map(function(r) {
+      return '<div class="album-thumb' + (r.missing ? ' missing' : '') + '" data-tl-open="' + escapeHtml(r.id) + '" title="' + escapeHtml(r.title) + '">' + imageSlotHtml(r) + '</div>';
+    }).join('') + '</div>';
+  }
+  function albumHtml(u) {
+    var items = unitRecords(u).reverse(); // chronological: 图1 … 图5
+    var newest = u.items[0].record;
+    var cls = 'entry' + (u.items.some(unitStarred) ? ' starred' : '') + (isNewUnit(u) ? ' is-new' : '');
+    var descs = [];
+    items.forEach(function(r) { if (r.description && descs.indexOf(r.description) < 0) descs.push(r.description); });
+    var h = '<article class="' + cls + '">';
+    h += '<div class="entry-time">' + hhmm(newest.createdAt) + '</div><div class="entry-rail"></div>';
+    h += '<div class="entry-card" data-tl-card="' + escapeHtml(items[0].id) + '" data-tl-open="' + escapeHtml(items[0].id) + '"><div class="entry-text">';
+    h += '<div class="entry-title">' + escapeHtml(albumTitle(items)) + '</div>';
+    if (descs.length) h += '<div class="entry-desc">' + escapeHtml(descs.join(' / ')) + '</div>';
+    h += albumStripHtml(items);
+    h += '<div class="entry-meta"><span class="meta-time">' + hhmm(newest.createdAt) + '</span>' + projectMeta(newest) +
+      '<span>' + escapeHtml(t('entry.images', { n: items.length })) + '</span>' +
+      actionsHtml(items[0], true, false) + '</div>';
+    h += '</div></div></article>';
+    return h;
+  }
+
+  function renderTimeline(sorted) {
+    var units = buildUnits(sorted);
+    indexUnits(units);
+    var days = [], dayMap = {};
+    units.forEach(function(u) {
+      var ts = unitTime(u), k = dayKey(ts);
+      if (!dayMap[k]) { dayMap[k] = { key: k, ts: ts, units: [] }; days.push(dayMap[k]); }
+      dayMap[k].units.push(u);
+    });
+    lastDays = dayMap;
+    var html = '';
+    days.forEach(function(d) {
+      var lbl = dayLabel(d.ts);
+      var recs = [];
+      d.units.forEach(function(u) { recs.push.apply(recs, unitRecords(u)); });
+      var projects = [];
+      recs.forEach(function(r) {
+        var s = spaceOf(r);
+        var n = s.label;
+        if (!s.last && projects.indexOf(n) < 0) projects.push(n);
+      });
+      var meta = t('day.meta', { n: recs.length });
+      if (projectFilter === 'all' && projects.length) meta += ' · ' + listJoin(projects.slice(0, 4)) + (projects.length > 4 ? '…' : '');
+      html += '<section class="day"><div class="day-head">' +
+        '<span class="day-title">' + escapeHtml(lbl.title) + '</span>' +
+        (lbl.sub ? '<span class="day-date">' + escapeHtml(lbl.sub) + '</span>' : '') +
+        '<span class="day-meta">' + escapeHtml(meta) + '</span>' +
+        '<button type="button" class="day-copy" data-tl-copy-day="' + d.key + '">' + escapeHtml(t('day.copy')) + '</button></div>';
+      html += '<div class="entries">' + d.units.map(function(u) { return u.kind === 'album' ? albumHtml(u) : entryHtml(u); }).join('') + '</div></section>';
+    });
+    contentEl.innerHTML = html;
+    var keys = {};
+    units.forEach(function(u) { keys[u.key] = true; });
+    seenEntryKeys = keys;
+    requestThumbs();
+  }
+
+  // ── Thumbnails: cached per path so re-renders (search typing) don't refetch ──
+  function fillImageSlot(slot, dataUrl) {
+    var img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = '';
+    slot.replaceChildren(img);
+  }
+  function requestThumbs() {
+    contentEl.querySelectorAll('.preview-image[data-image-path]').forEach(function(slot) {
+      var p = slot.getAttribute('data-image-path');
+      if (!p) return;
+      if (Object.prototype.hasOwnProperty.call(imageCache, p)) { if (imageCache[p]) fillImageSlot(slot, imageCache[p]); return; }
+      if (imagePending[p] || !finchApi || !finchApi.postMessage) return;
+      imagePending[p] = true;
+      finchApi.postMessage({ type: 'requestImage', filePath: p });
+    });
+  }
+
+  // ── Actions ──
+  // Starring an entry stars every delivery of it, so the star survives when
+  // a newer delivery becomes the head.
+  function toggleStar(id) {
+    var u = unitIndex[id];
+    var recs = u ? u.records : [findRecord(id)].filter(Boolean);
+    if (!recs.length) return;
+    var value = !recs.some(function(r) { return r.starred; });
+    recs.forEach(function(r) { r.starred = value; });
+    render();
+    if (finchApi && finchApi.postMessage) {
+      finchApi.postMessage({ type: 'toggleStar', id: recs[0].id, ids: recs.map(function(r) { return r.id; }), value: value });
+    }
+  }
+  function annotateRecord(record) {
+    if (!record || !finchApi || !finchApi.composer || !finchApi.composer.addContexts) return;
+    finchApi.composer.addContexts([{
+      type: 'annotation',
+      label: record.title,
+      path: record.filePath,
+      promptText: 'Referencing generated file: ' + record.title + ' (' + record.fileName + ')'
+    }]).then(function() {
+      if (finchApi.ui && finchApi.ui.toast) finchApi.ui.toast({ title: t('panel.annotateToast.title'), variant: 'success' }).catch(function() {});
+    }).catch(function() {
+      if (finchApi.ui && finchApi.ui.toast) finchApi.ui.toast({ title: t('panel.annotateError.title'), variant: 'error' }).catch(function() {});
+    });
+  }
+  function summaryLine(r) { return r.title + (r.description ? colon() + r.description : ''); }
+  function copyDay(key) {
+    var d = lastDays[key];
+    if (!d) return;
+    var lbl = dayLabel(d.ts);
+    var lines = [t('day.copyHeading', { date: lbl.sub || lbl.title })];
+    d.units.forEach(function(u) {
+      var r = u.kind === 'album' ? u.items[0].record : u.record;
+      var sp = spaceOf(r);
+      var prefix = sp.last ? '' : sp.label + ' · ';
+      if (u.kind === 'album') {
+        var items = unitRecords(u).reverse();
+        lines.push('- ' + prefix + albumTitle(items) + (lang === 'zh' ? '（' : ' (') + t('entry.images', { n: items.length }) + (lang === 'zh' ? '）' : ')'));
+      } else {
+        lines.push('- ' + prefix + summaryLine(r));
+      }
+    });
+    copyText(lines.join('\n'), t('day.copied'));
+  }
+
+  contentEl.addEventListener('click', function(e) {
+    if (viewMode !== 'timeline') return;
+    var el, id;
+    function hit(attr) { el = e.target.closest('[' + attr + ']'); id = el ? el.getAttribute(attr) : ''; return !!el; }
+    if (hit('data-tl-star')) { toggleStar(id); return; }
+    if (hit('data-tl-annotate')) { annotateRecord(findRecord(id)); return; }
+    if (hit('data-tl-session')) {
+      var rs = findRecord(id);
+      if (rs && rs.sessionId && finchApi && finchApi.navigation && finchApi.navigation.openSession) {
+        finchApi.navigation.openSession(rs.sessionId).catch(function() {});
+      }
+      return;
+    }
+    if (hit('data-tl-remove')) { var rr = findRecord(id); if (rr) showDeleteModal(rr, unitIndex[id]); return; }
+    if (hit('data-tl-versions')) { toggleExpanded(id); return; }
+    if (hit('data-tl-copy-day')) { copyDay(id); return; }
+    var sel = window.getSelection ? String(window.getSelection()) : '';
+    if (sel) return; // let people select text without launching or toggling
+    // A delivery row / thumbnail opens that file; a single-delivery card opens its file.
+    if (hit('data-tl-open')) { openRecord(id); return; }
+    if (e.target.closest('.entry-history')) return; // overwritten rows and gaps do nothing
+    // A card with several deliveries expands / collapses the full list.
+    if (hit('data-tl-toggle')) toggleExpanded(id);
+  });
+  contentEl.addEventListener('contextmenu', function(e) {
+    if (viewMode !== 'timeline') return;
+    var row = e.target.closest('[data-tl-open]');
+    var card = e.target.closest('[data-tl-card]');
+    if (row && row.hasAttribute('data-tl-card')) row = null;
+    if (!row && !card) return;
+    e.preventDefault();
+    if (row) {
+      // One specific delivery inside the list → actions for just that file.
+      var rec = findRecord(row.getAttribute('data-tl-open'));
+      if (rec) showContextMenu(rec, e.clientX, e.clientY, row.closest('.entry-history') ? null : unitIndex[rec.id]);
+      return;
+    }
+    var head = findRecord(card.getAttribute('data-tl-card'));
+    if (head) showContextMenu(head, e.clientX, e.clientY, unitIndex[head.id]);
+  });
+
+  // ── Right-click context menu ──────────────────────────────────────────
+  function closeContextMenu() {
+    var old = document.getElementById('df-ctx-menu');
+    if (old) old.remove();
+  }
+  function copyText(text, toastTitle) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      ta.remove();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(fallback);
+    } else fallback();
+    if (finchApi && finchApi.ui && finchApi.ui.toast) {
+      finchApi.ui.toast({ title: toastTitle || t('ctx.copied'), variant: 'success' }).catch(function() {});
+    }
+  }
+  // unit: passed when the menu is for a whole entry (all its deliveries);
+  // null when it is for one specific delivery inside the expanded list.
+  function showContextMenu(record, x, y, unit) {
+    closeContextMenu();
+    var starredNow = unit ? unitStarred(unit) : !!record.starred;
+    var items = [
+      { key: 'open', label: t('ctx.open') },
+      { key: 'copy', label: t('ctx.copyPath') },
+      { key: 'summary', label: t('ctx.copySummary') },
+      { key: 'star', label: t(starredNow ? 'ctx.unstar' : 'ctx.star') }
+    ];
+    if (record.sessionId && finchApi && finchApi.navigation && finchApi.navigation.openSession) {
+      items.push({ key: 'session', label: t('ctx.openSession') });
+    }
+    items.push({ sep: true });
+    items.push({ key: 'delete', label: t('ctx.delete'), danger: true });
+
+    var menu = document.createElement('div');
+    menu.id = 'df-ctx-menu';
+    menu.className = 'ctx-menu';
+    menu.innerHTML = items.map(function(it) {
+      if (it.sep) return '<div class="ctx-sep"></div>';
+      return '<button type="button" class="ctx-item' + (it.danger ? ' danger' : '') + '" data-ctx="' + it.key + '">' + escapeHtml(it.label) + '</button>';
+    }).join('');
+    document.body.appendChild(menu);
+    var w = menu.offsetWidth, h = menu.offsetHeight;
+    menu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+
+    menu.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-ctx]');
+      if (!btn) return;
+      var key = btn.dataset.ctx;
+      closeContextMenu();
+      if (key === 'open') openRecord(record.id);
+      else if (key === 'copy') copyText(record.filePath || '');
+      else if (key === 'summary') copyText(summaryLine(record), t('ctx.summaryCopied'));
+      else if (key === 'star') toggleStar(record.id);
+      else if (key === 'session') finchApi.navigation.openSession(record.sessionId).catch(function() {});
+      else if (key === 'delete') showDeleteModal(record, unit);
+    });
+    menu.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+    setTimeout(function() {
+      document.addEventListener('mousedown', function onDown(e) {
+        if (menu.contains(e.target)) return;
+        closeContextMenu();
+        document.removeEventListener('mousedown', onDown, true);
+      }, true);
+    }, 0);
+  }
+  window.addEventListener('blur', closeContextMenu);
+  window.addEventListener('resize', closeContextMenu);
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeContextMenu(); });
+
   // ── Delete confirmation modal ─────────────────────────────────────────
-  function showDeleteModal(record) {
+  // unit given → the entry is deleted as a whole: every delivery's record,
+  // and (if ticked) every one of its files that still exists goes to the Trash.
+  function showDeleteModal(record, unit) {
+    var recs = unit && unit.records && unit.records.length > 1 ? unit.records : [record];
+    var files = [];
+    recs.forEach(function(r) { if (!r.missing && r.filePath && files.indexOf(r.filePath) < 0) files.push(r.filePath); });
+    var message = recs.length > 1
+      ? t('panel.deleteConfirm.messageGroup', { title: escapeHtml(record.title), n: recs.length })
+      : t('panel.deleteConfirm.message', { title: escapeHtml(record.title) });
+    var fileLabel = files.length > 1 ? t('panel.deleteConfirm.deleteFilesLabel', { n: files.length }) : t('panel.deleteConfirm.deleteFileLabel');
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML =
       '<div class="modal">' +
         '<div class="modal-title">' + escapeHtml(t('panel.deleteConfirm.title')) + '</div>' +
-        '<div class="modal-message">' + t('panel.deleteConfirm.message', { title: escapeHtml(record.title) }) + '</div>' +
-        '<label class="modal-checkbox">' +
+        '<div class="modal-message">' + message + '</div>' +
+        (files.length ? '<label class="modal-checkbox">' +
           '<input type="checkbox" id="df-delete-file-checkbox">' +
-          '<span>' + escapeHtml(t('panel.deleteConfirm.deleteFileLabel')) + '</span>' +
-        '</label>' +
+          '<span>' + escapeHtml(fileLabel) + '</span>' +
+        '</label>' : '') +
         '<div class="modal-actions">' +
           '<button type="button" class="modal-btn" data-modal-cancel>' + escapeHtml(t('panel.deleteConfirm.cancel')) + '</button>' +
           '<button type="button" class="modal-btn danger" data-modal-confirm>' + escapeHtml(t('panel.deleteConfirm.confirm')) + '</button>' +
@@ -1069,10 +2554,11 @@
     });
     overlay.querySelector('[data-modal-cancel]').addEventListener('click', close);
     overlay.querySelector('[data-modal-confirm]').addEventListener('click', function() {
-      var deleteFile = overlay.querySelector('#df-delete-file-checkbox').checked;
+      var box = overlay.querySelector('#df-delete-file-checkbox');
+      var deleteFile = !!(box && box.checked);
       close();
       if (!finchApi) return;
-      finchApi.postMessage({ type: 'remove', id: record.id, deleteFile: deleteFile });
+      finchApi.postMessage({ type: 'remove', id: recs[0].id, ids: recs.map(function(r) { return r.id; }), deleteFile: deleteFile });
     });
   }
 
@@ -1081,9 +2567,19 @@
     finchApi.onMessage(function(message) {
       if (!message || typeof message !== 'object') return;
 
+      if (message.type === 'openResult') {
+        if (message.requestId !== pendingOpenRequest) return;
+        clearTimeout(openRequestTimer);
+        pendingOpenRequest = '';
+        if (!message.ok) showOpenError(message.error);
+        return;
+      }
+
       // Handle finch:env
       if (message.type === 'finch:env') {
         currentView = message.view || '';
+        currentSpaceId = message.spaceId || '';
+        currentSpaceName = message.spaceName || '';
         if (message.locale) lang = resolveLang(message.locale);
         if (message.assistantName) finchName = message.assistantName;
         onSessionIdKnown(message.sessionId || '');
@@ -1096,11 +2592,16 @@
         deliveries = message.data || [];
         if (message.env) {
           if (message.env.view) currentView = message.env.view;
+          if (message.env.spaceId) currentSpaceId = message.env.spaceId;
+          if (message.env.spaceName) currentSpaceName = message.env.spaceName;
+          if (message.env.spaceNames) spaceNames = message.env.spaceNames;
           if (message.env.locale) lang = resolveLang(message.env.locale);
           if (message.env.assistantName) finchName = message.env.assistantName;
           if (message.env.sessionId) onSessionIdKnown(message.env.sessionId);
         }
         render();
+        if (restoreScrollY) { window.scrollTo(0, restoreScrollY); restoreScrollY = 0; }
+        if (message.env) checkPageBuild(message.env.pageBuild);
         return;
       }
 
@@ -1121,14 +2622,14 @@
       // card's <img> (matched by file path, which is stable across re-renders).
       if (message.type === 'imageData') {
         var reqPath = message.filePath;
-        var slot = null;
+        delete imagePending[reqPath];
+        var okImage = !!message.dataUrl && !message.error &&
+          /^data:image\/(png|jpeg|gif|webp|avif|bmp);base64,[a-z0-9+/=]+$/i.test(message.dataUrl);
+        imageCache[reqPath] = okImage ? message.dataUrl : '';
+        if (!okImage) return;
         contentEl.querySelectorAll('.preview-image').forEach(function(node) {
-          if (node.getAttribute('data-image-path') === reqPath) slot = node;
+          if (node.getAttribute('data-image-path') === reqPath) fillImageSlot(node, message.dataUrl);
         });
-        if (!slot) return;
-        if (message.dataUrl && !message.error) {
-          slot.innerHTML = '<img src="' + message.dataUrl + '" alt="">';
-        }
         return;
       }
     });
@@ -1136,6 +2637,7 @@
 
   // ── Initial render ─────────────────────────────────────────────────────
   render();
+  loadSpaces();
 
   // Panel resize → the auto-fill grid reflows instantly; ease cards from
   // the cached rects to their new width/position instead of snapping.
