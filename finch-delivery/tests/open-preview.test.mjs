@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { startHost, tempFiles } from './helpers.mjs';
+import { nativeCalls, startHost, tempFiles } from './helpers.mjs';
 
 test('openPreview resolves the path from the record id, never from the page', async () => {
   const { paths } = await tempFiles(['report.md']);
@@ -10,7 +10,7 @@ test('openPreview resolves the path from the record id, never from the page', as
   const view = host.openPanel();
   await view.send({ type: 'openPreview', id, requestId: 'r1', filePath: '/etc/passwd' });
   assert.deepEqual(host.previews, [paths['report.md']]);
-  assert.deepEqual(view.last('openResult'), { type: 'openResult', id, requestId: 'r1', ok: true });
+  assert.deepEqual(view.last('openResult'), { type: 'openResult', id, requestId: 'r1', mode: 'preview', ok: true });
 });
 
 test('openPreview reports why a file cannot be opened', async () => {
@@ -25,21 +25,16 @@ test('openPreview reports why a file cannot be opened', async () => {
     },
   });
   const view = host.openPanel();
-  for (const [id, reason] of [['gone', 'missingFile'], ['rel', 'invalidPath'], ['dir', 'invalidPath'], ['nope', 'missingRecord']]) {
-    await view.send({ type: 'openPreview', id, requestId: id, filePath: paths['a.md'] });
-    assert.equal(view.last('openResult').ok, false, id);
-    assert.equal(view.last('openResult').error, reason, id);
+  const before = nativeCalls.length;
+  for (const type of ['openPreview', 'openNative', 'revealNative']) {
+    for (const [id, reason] of [['gone', 'missingFile'], ['rel', 'invalidPath'], ['dir', 'invalidPath'], ['nope', 'missingRecord']]) {
+      await view.send({ type, id, requestId: id, filePath: paths['a.md'] });
+      assert.equal(view.last('openResult').ok, false, `${type} ${id}`);
+      assert.equal(view.last('openResult').error, reason, `${type} ${id}`);
+    }
   }
   assert.equal(host.previews.length, 0, 'invalid records never open anything');
-});
-
-test('openPreview on a Finch without the preview API reports unsupported', async () => {
-  const { paths } = await tempFiles(['a.md']);
-  const host = startHost({ ui: { openFilePreview: undefined } });
-  await host.record({ filePath: paths['a.md'], title: 'A' });
-  const view = host.openPanel();
-  await view.send({ type: 'openPreview', id: host.records()[0].id, requestId: 'r' });
-  assert.equal(view.last('openResult').error, 'unsupported');
+  assert.equal(nativeCalls.length, before, 'invalid records never launch a command');
 });
 
 test('requestImage only reads files that are recorded', async () => {

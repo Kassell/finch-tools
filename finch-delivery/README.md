@@ -27,14 +27,15 @@
 - **顶部一句话** — 一共多少份成果、本周新增多少、来自几个项目。
 - **筛选** — 标签页可选全部、当前会话（只在右侧面板里出现）和收藏；旁边可以搜索标题、说明和文件名；下面一排按项目筛选；类型下拉框只列出实际有的文件类型。
 - **同一份成果只占一条** — 同一个文件交付了多次（比如改了几轮的方案），只显示最新一次，旁边标“交付 N 次”。点这一条会展开全部交付记录，点其中一行就打开那一次的文件。同一会话、同一文件夹里连续生成的一批图片会合成一组，每张都能单独打开。
-- **点击成果** → 用 Finch 自带的文件预览打开。
+- **点击成果** → Finch 能预览的文件（Markdown、文本、图片、网页、100MB 以内的 PDF、20MB 以内的 .docx/.xlsx）在 Finch 里预览，其余的用电脑上该类型的默认应用打开。
 - **收藏** — 重要的成果点星标收藏，在“收藏”标签页里集中查看。
 - **复制当天成果** — 鼠标移到某一天的标题上，可以把当天的成果复制成一份清单，写日报时直接用。
-- **右键菜单** — 打开、复制文件路径、复制成果摘要、收藏、跳转到对应会话、删除。
+- **右键菜单** — 在 Finch 中预览（能预览时）、用默认应用打开、在文件夹中显示、复制文件路径、复制成果摘要、收藏、跳转到对应会话、删除。
 - **悬浮时卡片角落会出现几个小按钮**：
   - ✎ 添加批注 — 把这份文件作为引用插入当前对话的输入框，方便接着跟 AI 讨论它（只在右侧面板里出现，见下）
+  - 📂 在文件夹中显示 — 在访达（Finder）或资源管理器里定位并选中这个文件
   - ↗ 跳转到这份文件是在哪个会话里生成的
-  - ✕ 删除这条记录——会先弹出确认弹窗，里面还有一个「同时从磁盘删除该文件」的勾选框，**默认不勾选**；勾上再确认才会真的删掉磁盘上的原文件，且不可恢复，请谨慎使用。交付过多次的成果会一起删除全部交付记录
+  - ✕ 删除这条记录——会先弹出确认弹窗，里面还有一个“同时把文件移到废纸篓”的勾选框，**默认不勾选**；勾上再确认，原文件会被移到废纸篓，可以从废纸篓里恢复。交付过多次的成果会一起删除全部交付记录
 
 文件被移走或删除的成果会标明“文件已移动或删除”。成果库更新后，已经打开的页面会自动刷新一次，你的筛选、展开状态和滚动位置都会保留。
 
@@ -50,10 +51,13 @@ AI 登记成果时，标题写的是成果本身，不带“V2”“初稿”这
 不会。这个工具只登记 AI 明确产出的文档/图片类"成果"，源代码、配置文件从一开始就被排除在外。
 
 **删除记录会不会把文件本身也删掉？**
-默认不会——删除只清掉"记录"（一条索引），不碰磁盘上的原始文件。如果你在删除弹窗里主动勾选了「同时从磁盘删除该文件」，才会真的把源文件也删掉，而且是永久删除、无法恢复，请谨慎操作。
+默认不会——删除只清掉"记录"（一条索引），不碰磁盘上的原始文件。如果你在删除弹窗里主动勾选了“同时把文件移到废纸篓”，源文件会被移到废纸篓，误删了可以从废纸篓里放回去。成果库不会永久删除文件；Windows 上暂不支持移到回收站，勾选后文件会原样保留并提示你。
 
 **数据存在哪里？会联网吗？**
-所有记录都存在本地（Finch 的扩展私有存储里），不联网。成果库只读取它登记过的文件：用来显示图片缩略图、发现文件已被移走。只有你在删除弹窗里主动勾选时，才会删除磁盘上的文件。
+所有记录都存在本地（Finch 的扩展私有存储里），不联网。成果库只读取它登记过的文件：用来显示图片缩略图、发现文件已被移走。只有你在删除弹窗里主动勾选时，才会把文件移到废纸篓。
+
+**为什么要运行系统命令的权限？**
+“用默认应用打开”“在文件夹中显示”“移到废纸篓”这三件事，Finch 还没有开放给小程序，所以成果库调用系统自带的命令来做：macOS 的 `open`、`trash`，Linux 的 `xdg-open`、`gio`，Windows 的资源管理器。只有你点了某一份成果时，才会对那一个文件执行，文件路径取自成果记录。
 
 ## 支持的文件类型
 
@@ -98,14 +102,15 @@ Artifacts opens as a **timeline**: one section per day, each artifact led by its
 - **A one-line summary** at the top — how many artifacts, how many this week, from how many projects.
 - **Filters** — tabs for All, Current Session (only in the right-side panel) and Starred; a search box for titles, descriptions and file names; a row of project filters; a type menu listing only the file types you actually have.
 - **One entry per artifact** — when the same file is delivered several times (a plan revised over a few rounds, say), only the latest delivery is shown, marked "Delivered N times". Click the entry to list every delivery, and click a row to open that delivery's file. A batch of images generated in one session and folder becomes one album; each image still opens on its own.
-- **Click an artifact** → opens it in Finch's native file preview.
+- **Click an artifact** → files Finch can preview (Markdown, text, images, web pages, PDF up to 100 MB, .docx/.xlsx up to 20 MB) open in Finch's native file preview; everything else opens in your computer's default app for that type.
 - **Star** the artifacts that matter; they collect under the Starred tab.
 - **Copy a day's list** — hover a day heading to copy that day's artifacts as a list, handy for a daily report.
-- **Right-click** for Open, Copy file path, Copy summary, Star, Go to session and Delete.
+- **Right-click** for Preview in Finch (when it can), Open in default app, Show in folder, Copy file path, Copy summary, Star, Go to session and Delete.
 - **Hover a card** to reveal a few small buttons in the corner:
   - ✎ add an annotation — inserts a reference to this file into the current conversation's Composer, so you can keep discussing it with the AI (only shown in the right-side panel, see below)
+  - 📂 show in folder — reveals and selects the file in Finder or File Explorer
   - ↗ jump to the session where it was created
-  - ✕ remove this record — a confirmation dialog pops up first, with an "Also delete the file from disk" checkbox that is **unchecked by default**; only checking it and confirming actually deletes the original file, and that deletion is permanent. For an artifact delivered several times, every delivery is removed together
+  - ✕ remove this record — a confirmation dialog pops up first, with an "Also move the file to the Trash" checkbox that is **unchecked by default**; checking it and confirming moves the original file to the Trash, where it can be restored. For an artifact delivered several times, every delivery is removed together
 
 Artifacts whose file was moved or deleted are marked as such. After Artifacts is updated, pages that are already open refresh themselves once and keep your filters, expanded entries and scroll position.
 
@@ -121,10 +126,13 @@ The UI language follows Finch's own language setting, and it adapts to light/dar
 No. Only document/image-type deliverables the AI explicitly produces get logged — source and config files are excluded by design.
 
 **If I delete a record, does it delete the actual file too?**
-Not by default — deleting only removes the index entry, not the file on disk. If you explicitly check "Also delete the file from disk" in the delete dialog, the original file is permanently removed too — that action cannot be undone, so use it carefully.
+Not by default — deleting only removes the index entry, not the file on disk. If you explicitly check "Also move the file to the Trash" in the delete dialog, the original file goes to the Trash, so a mistaken delete can be undone. Artifacts never deletes files permanently; on Windows moving to the Recycle Bin isn't supported yet, so the file is left in place and you're told so.
 
 **Where's the data stored? Does it need internet access?**
-Everything is stored locally in the extension's own private storage — no network access. Artifacts only reads files it has recorded: to show image thumbnails and to notice files that were moved. It deletes a file from disk only when you explicitly check that box in the delete dialog.
+Everything is stored locally in the extension's own private storage — no network access. Artifacts only reads files it has recorded: to show image thumbnails and to notice files that were moved. It moves a file to the Trash only when you explicitly check that box in the delete dialog.
+
+**Why does it need permission to run system commands?**
+Finch doesn't offer "open in the default app", "show in folder" or "move to Trash" to mini tools yet, so Artifacts uses the system's own commands: `open` and `trash` on macOS, `xdg-open` and `gio` on Linux, File Explorer on Windows. They only run on the one file you clicked, with the path taken from the artifact's record.
 
 ## Supported file types
 

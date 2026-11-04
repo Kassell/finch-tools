@@ -1,9 +1,24 @@
 // Shared fake host for the black-box tests: runs the real built `activate()`
 // against an in-memory storage, a captured tool and fake panels.
 import { mkdtemp, writeFile } from 'node:fs/promises';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { activate } from '../dist/index.js';
+
+// Native commands (open, trash …) never run for real in tests: execFile is
+// replaced before the built module is loaded, and every call is recorded.
+export const nativeCalls = [];
+/** Set to (file, args) => Error | null to make a native command fail. */
+export const native = { fail: null };
+const childProcess = createRequire(import.meta.url)('node:child_process');
+childProcess.execFile = function fakeExecFile(file, args, options, callback) {
+  const done = typeof options === 'function' ? options : callback;
+  nativeCalls.push({ file, args: [...args] });
+  const err = native.fail ? native.fail(file, args) : null;
+  setImmediate(() => done(err, '', ''));
+};
+syncBuiltinESMExports();
+const { activate } = await import('../dist/index.js');
 
 /** Creates real files in a fresh temp directory and returns their paths. */
 export async function tempFiles(names) {

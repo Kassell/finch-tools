@@ -1,7 +1,11 @@
 import type * as finch from 'finch';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, stat, unlink } from 'node:fs/promises';
-import { isAbsolute, normalize } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, normalize } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -39,7 +43,7 @@ interface DeliveryRecord {
 type Deliveries = DeliveryRecord[];
 
 /** What the panel receives: the stored record plus transient file state. */
-type PanelRecord = DeliveryRecord & { missing?: boolean };
+type PanelRecord = DeliveryRecord & { missing?: boolean; fileSize?: number };
 
 const STORAGE_KEY = 'deliveries';
 const SPACE_NAMES_KEY = 'spaceNames';
@@ -400,14 +404,15 @@ async function buildPanelEnv(
 
 /**
  * Flags records whose file is gone from disk so the page can show them as
- * moved or deleted instead of failing on click. Never persisted.
+ * moved or deleted instead of failing on click, and adds the file size so the
+ * page can decide preview vs. default app inside the click. Never persisted.
  */
 async function withFileState(all: Deliveries): Promise<PanelRecord[]> {
   return Promise.all(
     all.map(async (r): Promise<PanelRecord> => {
       try {
-        await stat(r.filePath);
-        return r;
+        const info = await stat(r.filePath);
+        return { ...r, fileSize: info.size };
       } catch {
         return { ...r, missing: true };
       }
@@ -471,6 +476,76 @@ async function openFilePreview(ctx: finch.MiniToolContext, filePath: string): Pr
   await ctx.ui.openFilePreview(filePath);
 }
 
+// ── Native file actions (shell permission) ────────────────────────────────
+// Finch does not expose "open with the default app", "show in folder" or
+// "move to Trash" to mini tools yet, so these run the platform's own
+// commands. Paths are always passed as an argument array, never through a
+// shell, so a file name can never become a command.
+
+async function runNative(file: string, args: string[]): Promise<void> {
+  await execFileAsync(file, args, { timeout: 15000 });
+}
+
+function nativeFailure(err: unknown): Error {
+  if (err && typeof (err as { reason?: unknown }).reason === 'string') return err as Error;
+  return openFailure('nativeFailed', err instanceof Error ? err.message : String(err));
+}
+
+/** Opens a file with the system's default application. */
+async function openWithDefaultApp(filePath: string): Promise<void> {
+  try {
+    if (process.platform === 'darwin') await runNative('/usr/bin/open', [filePath]);
+    else if (process.platform === 'linux') await runNative('xdg-open', [filePath]);
+    // explorer.exe exits with 1 even when it opened the file, so its exit code means nothing.
+    else if (process.platform === 'win32') await runNative('explorer.exe', [filePath]).catch(() => undefined);
+    else throw openFailure('platform', `unsupported platform: ${process.platform}`);
+  } catch (err) {
+    throw nativeFailure(err);
+  }
+}
+
+/** Shows the file selected in Finder / Explorer; Linux opens its folder. */
+async function revealInFolder(filePath: string): Promise<void> {
+  try {
+    if (process.platform === 'darwin') await runNative('/usr/bin/open', ['-R', filePath]);
+    else if (process.platform === 'linux') await runNative('xdg-open', [dirname(filePath)]);
+    else if (process.platform === 'win32') await runNative('explorer.exe', ['/select,' + filePath]).catch(() => undefined);
+    else throw openFailure('platform', `unsupported platform: ${process.platform}`);
+  } catch (err) {
+    throw nativeFailure(err);
+  }
+}
+
+/**
+ * "Also delete the file" moves it to the Trash so a mistaken delete can be
+ * undone. Never falls back to a permanent delete: where the Trash is not
+ * reachable the file is left in place and the error is reported.
+ */
+async function moveToTrash(filePath: string): Promise<void> {
+  if (process.platform === 'darwin') {
+    try {
+      await runNative('/usr/bin/trash', [filePath]);
+      return;
+    } catch (err) {
+      // ENOENT here means this macOS has no /usr/bin/trash; anything else is a real failure.
+      if ((err as { code?: unknown }).code !== 'ENOENT') throw err;
+    }
+    // Older macOS: ask Finder. The path travels as argv, never inside the script text.
+    await runNative('/usr/bin/osascript', [
+      '-e', 'on run argv',
+      '-e', 'tell application "Finder" to delete (POSIX file (item 1 of argv))',
+      '-e', 'end run',
+      filePath,
+    ]);
+    return;
+  }
+  if (process.platform === 'linux') {
+    await runNative('gio', ['trash', filePath]);
+    return;
+  }
+  throw new Error(`Moving files to the Trash is not supported on ${process.platform}; the file was left in place.`);
+}
+
 // ── Panel message handling ──────────────────────────────────────────────────
 
 interface PanelMessage {
@@ -482,7 +557,7 @@ interface PanelMessage {
   sessionId?: string;
   filePath?: string;
   value?: boolean;
-  /** Panel-only: when true, also delete the underlying files from disk (best-effort). */
+  /** Panel-only: when true, also move the underlying files to the Trash (best-effort). */
   deleteFile?: boolean;
 }
 
@@ -516,7 +591,30 @@ async function handlePanelMessage(
       const response: Record<string, unknown> = { type: 'openResult', id: msg.id, requestId: msg.requestId };
       try {
         const record = await recordFile(all, msg.id);
-        await openFilePreview(ctx, record.filePath);
+        try {
+          await openFilePreview(ctx, record.filePath);
+          response.mode = 'preview';
+        } catch (err) {
+          // Finch refused the file (or is too old to preview): the default app still can.
+          ctx.logger.warn(`Preview failed, opening in the default app instead: ${String(err)}`);
+          await openWithDefaultApp(record.filePath);
+          response.mode = 'native';
+        }
+        response.ok = true;
+      } catch (err) {
+        response.ok = false;
+        response.error = openErrorReason(err);
+      }
+      await panel.postMessage(response);
+      break;
+    }
+    case 'openNative':
+    case 'revealNative': {
+      const response: Record<string, unknown> = { type: 'openResult', id: msg.id, requestId: msg.requestId };
+      try {
+        const record = await recordFile(all, msg.id);
+        if (msg.type === 'openNative') await openWithDefaultApp(record.filePath);
+        else await revealInFolder(record.filePath);
         response.ok = true;
       } catch (err) {
         response.ok = false;
@@ -555,7 +653,7 @@ async function handlePanelMessage(
         await refreshDeliveryRow(ctx, sessionId);
       }
 
-      // Deleting the records never blocks on the disk delete below — the
+      // Deleting the records never blocks on moving the files below — the
       // record is the source of truth for this tool, the file is best-effort.
       let fileDeleteError: string | undefined;
       if (msg.deleteFile) {
@@ -563,11 +661,15 @@ async function handlePanelMessage(
           // Leave files another remaining record still points to, and skip ones already gone.
           if (remaining.some((r) => r.filePath === filePath)) continue;
           try {
-            await unlink(filePath);
+            await stat(filePath);
+          } catch {
+            continue;
+          }
+          try {
+            await moveToTrash(filePath);
           } catch (err) {
-            if ((err as { code?: unknown }).code === 'ENOENT') continue;
             fileDeleteError = err instanceof Error ? err.message : String(err);
-            ctx.logger.warn(`Failed to delete file on disk: ${filePath} — ${fileDeleteError}`);
+            ctx.logger.warn(`Failed to move file to the Trash: ${filePath} — ${fileDeleteError}`);
           }
         }
       }
