@@ -29,6 +29,7 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js && cp src/panel.html dist/panel.html",
     "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test \"tests/*.test.mjs\"",
     "prepublishOnly": "npm run typecheck && npm run build && npx @finchtoys/minitools doctor ."
   },
   "finch": {
