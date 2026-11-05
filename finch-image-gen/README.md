@@ -1,13 +1,13 @@
 # Image Tool（生图工具）
 
-Generate and edit images with OpenAI's GPT Image models, right inside a Finch conversation — text-to-image, image-to-image, masked edits and transparent cut-outs, saved as local files ready to view or share.
+Generate and edit images with OpenAI's GPT Image models — currently **Image 2.6** — right inside a Finch conversation: text-to-image, image-to-image, masked edits, transparent cut-outs, GIF animations and SVG vectors, saved as local files ready to view or share.
 
 ## What it does
 
 - **Text-to-image** — describe what you want, get a picture.
 - **Image-to-image** — hand it one or more reference images plus a prompt, and it generates a new image guided by them (restyle a photo, remix a product shot, follow a reference's composition, etc.). The API takes up to 16 references per request; enough for a real composite, and anything beyond that is refused before the call.
 - **Masked edits** — add a mask image and only the masked area changes.
-- **Markup-guided edits** — hand over a transparent PNG of your marks over the reference image and the model follows the marks (Image 2.5 / 2.6). Masks and markup are alternatives, not a pair.
+- **Markup-guided edits** — hand over a transparent PNG of your marks over the reference image and the model follows the marks (documented for Image 2.5; it is passed through on other models too, and an endpoint that does not take it will say so). Masks and markup are alternatives, not a pair.
 - **Transparent cut-outs** — ask for a transparent background and get a PNG/WebP you can drop straight into a design.
 - **Any size you need** — square, portrait, landscape, 2K or 4K, or a custom `WIDTHxHEIGHT`.
 - **Quality you control** — from a cheap `low` draft up to `max` detail, so a quick idea doesn't cost what a final asset costs.
@@ -124,14 +124,14 @@ When something does fail, the error message is specific rather than a bare `fetc
 
 # 生图工具 中文说明
 
-在 Finch 对话里直接用 OpenAI 的 GPT Image 模型生成或编辑图片——支持文生图、图生图、局部遮罩编辑和透明底抠图，结果保存为本地文件，随时可以查看或分享。
+在 Finch 对话里直接用 OpenAI 的 GPT Image 模型（当前是 **Image 2.6**）生成或编辑图片——支持文生图、图生图、局部遮罩编辑、透明底抠图、GIF 动画和 SVG 矢量，结果保存为本地文件，随时可以查看或分享。
 
 ## 功能
 
 - **文生图**：描述你想要的画面，直接生成图片。
 - **图生图**：提供一张或多张参考图加上提示词，模型会参考这些图生成新图（换风格、改背景、借鉴构图等）。接口一次最多接受 16 张参考图，超过会在发请求前直接拒绝。
 - **遮罩局部编辑**：再给一张遮罩图，就只改遮罩圈出来的区域。
-- **标注引导编辑**：把盖在参考图上的透明标注 PNG 交给模型，它就按标注改（Image 2.5 / 2.6）；遮罩和标注只能二选一。
+- **标注引导编辑**：把盖在参考图上的透明标注 PNG 交给模型，它就按标注改（文档标注支持到 Image 2.5；其他模型也会照传，接口不支持时会明确报错）。遮罩和标注只能二选一。
 - **透明底抠图**：要透明背景就能直接拿到可放进设计稿的 PNG/WebP。
 - **尺寸自由**：方图、横版、竖版、2K、4K，或任意 `宽x高`。
 - **画质可调**：从便宜快速的 `low` 草稿到细节拉满的 `max`，随手一试不用花成品的钱。

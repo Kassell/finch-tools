@@ -1431,7 +1431,7 @@ export function activate(ctx: finch.MiniToolContext): void {
           markup_path: {
             type: 'string',
             description:
-              'Optional local absolute path to a transparent PNG laid over the FIRST reference image as an editing guide (arrows, circles, text marks — GPT Image 2.5/2.6). Must match that image\'s dimensions and contain transparent pixels. Requires reference_image_paths and cannot be combined with mask_path.',
+              'Optional local absolute path to a transparent PNG laid over the FIRST reference image as an editing guide (arrows, circles, text marks — documented for GPT Image 2.5, and passed through on other models). Must match that image\'s dimensions and contain transparent pixels. Requires reference_image_paths and cannot be combined with mask_path.',
           },
           size: {
             type: 'string',
