@@ -81,8 +81,8 @@ test('catalogue aggregate uses unique documents and the true maximum index times
     await store.summary();
     const db = new DatabaseSync(join(root, '.knowledge', 'catalog.sqlite'));
     const insert = db.prepare('INSERT INTO documents (id,path,name,hash,added_at,indexed_at,chunks) VALUES (?,?,?,?,?,?,?)');
-    insert.run('one', '/fixture/one.md', 'one.md', 'one', 1000, 9000, 1);
-    insert.run('two', '/fixture/two.md', 'two.md', 'two', 2000, 7000, 2);
+    insert.run('one', join(root,'one.md'), 'one.md', 'one', 1000, 9000, 1);
+    insert.run('two', join(root,'two.md'), 'two.md', 'two', 2000, 7000, 2);
     db.exec("INSERT INTO tags (id,name,created_at) VALUES ('a','A',1),('b','B',2); INSERT INTO document_tags VALUES ('one','a',1),('one','b',1),('two','a',1),('two','b',1)");
     const summary = await store.summary();
     assert.equal(summary.documents, 2);

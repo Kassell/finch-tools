@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFile, cp, rename, mkdir, mkdtemp, readFile, readdir, rm, writeFile, stat, utimes } from 'node:fs/promises';
+import { copyFile, cp, rename, mkdir, mkdtemp, realpath, readFile, readdir, rm, writeFile, stat, utimes } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ import { nativeTarget, fixtureLink } from './test-platform.mjs';
 import { activate, assertSourcePath, openSourceDirectory, scanSourceDirectory, IndexSkipError } from '../dist/index.js';
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'knowledge-directory-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'knowledge-directory-')));
   const source = join(root, 'sources'), cache = join(root, 'cache');
   await mkdir(source); await mkdir(join(cache, 'lancedb-engine', '0.39.0'), { recursive: true });
   await copyFile(resolve(`node_modules/@lancedb/lancedb-${nativeTarget}/lancedb.${nativeTarget}.node`), join(cache, 'lancedb-engine', '0.39.0', `lancedb.${nativeTarget}.node`));
@@ -480,6 +480,7 @@ test('file details use original attributes and metadata sorting spans pages, tag
   assert.equal(details.modified_at, base); assert.equal(details.file_type, 'md'); assert.equal(details.size_bytes, 4);
   assert.notEqual(details.modified_at, details.indexed_at, 'source mtime is not the index timestamp');
   const nextTime = Date.UTC(2030, 0, 1); await utimes(smallest.path, new Date(nextTime), new Date(nextTime));
+  await store.indexStatus([smallest]); // Metadata refresh is explicit background work, never a page prerequisite.
   const modified = await store.page(null, 'modified', 0, 50, 'notes');
   assert.equal(modified.documents[0].id, smallest.id); assert.equal(modified.documents[0].modified_at, nextTime);
   const types = await store.page(null, 'type', 0, 50, 'notes');
@@ -495,7 +496,8 @@ test('file details use original attributes and metadata sorting spans pages, tag
   assert.equal(await readFile(smallest.path, 'utf8'), '000x', 'reading details never rewrites originals');
   await rm(smallest.path);
   const missing = await store.page(null, 'size', 50, 50, 'notes', false);
-  // Refresh the complete ordering first; a missing source is unknown, never zero bytes or 1970.
+  // A background verification records a confirmed missing file as unknown, not zero or 1970.
+  await store.indexStatus([smallest]);
   await store.page(null, 'size', 0, 50, 'notes', false);
   const final = await store.page(null, 'size', 50, 50, 'notes', false);
   assert.equal(final.documents.at(-1).id, smallest.id); assert.equal(final.documents.at(-1).size_bytes, null);
@@ -554,7 +556,7 @@ test('source inventory includes empty and unsupported-only folders with reasons 
   const dirs = await store.directories();
   for (const path of ['empty', 'empty/nested', 'unsupported-only', 'text']) assert.ok(dirs.some(item => item.path === path), path);
   assert.equal(dirs.find(item => item.path === 'empty').count, 0);
-  assert.equal(dirs.find(item => item.path === 'text').count, 3, 'folder counts include empty and unrecognized files');
+  assert.equal(dirs.find(item => item.path === 'text').count, 1, 'ordinary folders exclude non-pending exceptions while All sources retains them');
   assert.equal(await store.fileCount(), 4);
   assert.equal((await store.browsePage(null, 'name', 0)).total, 4);
   assert.equal((await store.list()).length, 1);
@@ -641,31 +643,34 @@ test('file totals count each source path once across indexes, tags and issues, i
   await writeFile(changed, ''); await scanSourceDirectory(store);
   assert.equal((await store.list()).length, 2, 'old searchable passages are retained');
   assert.equal(await store.issueCount(), 3, 'one indexed file is also an issue');
-  assert.equal(await store.fileCount(), 4, '2 index rows plus 3 issues still represent only 4 files');
+  assert.equal(await store.fileCount(), 4, 'All sources counts the old index and its exception once');
+  assert.equal((await store.issuePage('name', 0)).total, 3);
   const directories = await store.directories();
   assert.equal(directories.find(item => item.path === '').count, 4);
-  assert.equal(directories.find(item => item.path === 'group').count, 3);
+  assert.equal(directories.find(item => item.path === 'group').count, 0);
   assert.equal(directories.find(item => item.path === 'empty-folder').count, 0);
   for (const sort of ['name', 'added', 'updated', 'modified', 'size', 'type']) {
     const page = await store.browsePage(null, sort, 0);
     assert.equal(page.total, 4); assert.equal(new Set(page.documents.map(doc => doc.path)).size, 4);
     const root = page.documents.find(doc => doc.name === 'root.md');
     assert.equal(await store.browsePosition(root.id, null, sort), page.documents.indexOf(root));
-    assert.equal((await store.browsePage(null, sort, 0, 50, 'group')).total, 3);
+    assert.equal((await store.browsePage(null, sort, 0, 50, 'group')).total, 0);
   }
-  assert.equal((await store.browsePage(a.id, 'name', 0)).total, 1, 'tag membership never duplicates a file');
-  assert.equal((await store.browsePage(b.id, 'name', 0)).total, 1);
+  assert.equal((await store.browsePage(a.id, 'name', 0)).total, 0, 'tag browsing also excludes failed updates');
+  assert.equal((await store.browsePage(b.id, 'name', 0)).total, 0);
   await writeFile(changed, 'Recovered searchable text'); await rm(join(f.source, 'group', 'unsupported.zip')); await scanSourceDirectory(store);
   assert.equal(await store.fileCount(), 3); assert.equal(await store.issueCount(), 1);
+  assert.equal((await store.browsePage(a.id, 'name', 0)).total, 1, 'recovery restores normal tag membership');
   await store.close(); const reopened = await f.open(); assert.equal(await reopened.fileCount(), 3);
   assert.equal((await reopened.browsePage(null, 'name', 0)).total, 3);
 });
 
-test('all-files browsing pages unsupported files without engines, gaps or duplicate paths', async t => {
+test('All sources and exception browsing page unsupported files without engines, gaps or duplicate paths', async t => {
   const f = await fixture(t);
   for (let i = 0; i < 57; i++) await writeFile(join(f.source, `${String(i).padStart(2, '0')}.bin`), 'Original');
   const store = await f.open(); await scanSourceDirectory(store);
-  const first = await store.browsePage(null, 'name', 0), last = await store.browsePage(null, 'name', 50);
+  assert.equal((await store.browsePage(null, 'name', 0)).total, 57);
+  const first = await store.issuePage('name', 0), last = await store.issuePage('name', 50);
   assert.equal(await store.fileCount(), 57); assert.equal(first.total, 57); assert.equal(last.total, 57);
   assert.equal(first.documents.length, 50); assert.equal(last.documents.length, 7);
   assert.equal(new Set([...first.documents, ...last.documents].map(doc => doc.path)).size, 57);
@@ -723,11 +728,11 @@ test('background window refresh anchors a pending file by path after its ID chan
   await scanSourceDirectory(store, undefined, controller.signal, { onCheckpoint(state) { if (!state.completed) controller.abort(); } });
   const anchorPath = join(f.source, '35.txt');
   const before = await store.browseWindow(null, 'name', null, false, { anchorPath, anchorIndex: 10 });
-  assert.equal(before.offset, 25); assert.equal(before.documents[10].path, anchorPath); assert.equal(before.documents[10].issueKind, 'pending');
+  assert.equal(before.offset, 20); assert.equal(before.documents.length, 50); assert.equal(before.documents[15].path, anchorPath); assert.equal(before.documents[15].issueKind, 'pending');
   const indexed = await store.importFile(anchorPath); await store.settleSourceFile('35.txt', null, await stat(f.source, { bigint: true }));
   await writeFile(join(f.source, '00-first.txt'), 'earlierkeyword'); await store.importFile(join(f.source, '00-first.txt'));
   const after = await store.browseWindow(null, 'name', null, false, { anchorPath, anchorIndex: 10, limit: 60 });
-  assert.equal(after.documents[10].id, indexed.document.id); assert.equal(after.offset, 26); assert.equal(after.total, 71);
+  assert.equal(after.documents[25].id, indexed.document.id); assert.equal(after.offset, 11); assert.equal(after.documents.length, 60); assert.equal(after.total, 71);
   assert.equal((await store.browseWindow(null, 'name', null, false, { issues: true })).total, 0, 'queued files never leak into the issue filter');
   const tag = await store.createTag('Only selected'); await store.setTags(indexed.document.id, [tag.id]);
   assert.equal((await store.browseWindow(tag.id, 'name', null, false)).total, 1);

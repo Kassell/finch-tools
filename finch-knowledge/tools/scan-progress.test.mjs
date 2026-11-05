@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transform } from 'esbuild';
+import { isLibraryScoped } from '../dist/index.js';
 
 const source = (await readFile(new URL('../src/view.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const declarations = source.slice(0, source.indexOf('\nmountStaticIcons();')).replace(/^import .*\r?\n/gm, '');
@@ -15,13 +16,13 @@ function fixture() {
   const element = id => {
     if (!elements.has(id)) {
       const classes = new Set();
-      elements.set(id, { hidden: false, attrs: {}, style: {}, replaceChildren() {}, classList: {
+      elements.set(id, { hidden: false, attrs: {}, style: {}, children: [], getBoundingClientRect: () => ({top:0,bottom:500}), replaceChildren() {}, classList: {
         toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); }, contains: name => classes.has(name),
       }, setAttribute(key, value) { this.attrs[key] = value; }, removeAttribute(key) { delete this.attrs[key]; } });
     }
     return elements.get(id);
   };
-  const context = createContext({
+  const context = createContext({ isLibraryScoped,
     window: { finch: { onMessage(callback) { receive = callback; }, postMessage() {} },
       setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; } },
     clearTimeout(id) { timers.delete(id); }, document: { getElementById: element }, toasts,
