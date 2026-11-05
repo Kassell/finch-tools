@@ -44,14 +44,16 @@ test('the real file row displays LanceDB coverage with localized labels, never a
   }
 });
 
-test('status is right-aligned and actions overlay the same trailing slot without changing layout', () => {
+test('status and actions share a fixed trailing slot without layout changes', () => {
   assert.match(css, /\.doc-status\s*\{[^}]*justify-content:\s*flex-end[^}]*min-width:\s*66px[^}]*margin-left:\s*auto/);
-  assert.match(css, /\.doc-tools\s*\{[^}]*position:\s*absolute[^}]*right:\s*9px[^}]*opacity:\s*0[^}]*visibility:\s*hidden[^}]*pointer-events:\s*none/);
+  assert.match(css, /\.doc-tools\s*\{[^}]*opacity:\s*0[^}]*visibility:\s*hidden[^}]*pointer-events:\s*none/);
+  assert.match(css, /\.doc-tools\s*\{[^}]*position:\s*absolute[^}]*right:\s*9px/);
   assert.match(css, /\.doc\s*\{[^}]*min-height:\s*46px/);
   for (const selector of ['.doc:hover', '.doc:focus-within', '.doc.menu-open']) {
-    assert.ok(css.includes(`${selector} .doc-status`)); assert.ok(css.includes(`${selector} .doc-tools`));
+    assert.ok(css.includes(`${selector} .doc-tools`));
   }
   assert.match(css, /\.doc:hover \.doc-status[^}]*opacity:\s*0[^}]*visibility:\s*hidden/);
+  for (const selector of ['.doc:hover', '.doc:focus-within', '.doc.menu-open']) assert.ok(css.includes(`${selector} .doc-status`));
   assert.match(css, /\.doc:hover \.doc-tools[^}]*opacity:\s*1[^}]*visibility:\s*visible/);
 });
 

@@ -15,9 +15,8 @@
         <p id="intro">Index on this device. AI answers may send retrieved passages to your selected model.</p>
       </div>
       <div class="masthead-tools">
-        <button type="button" id="sync" class="primary"><span data-icon="refresh-cw"></span><span id="sync-label">Scan and update</span></button>
-        <button type="button" id="open-directory" class="outline"><span data-icon="folder-open"></span><span id="open-directory-label">Open source folder</span></button>
         <button type="button" id="browse" class="ghost-icon" aria-label="Browse passages" title="Browse passages"><span data-icon="search"></span></button>
+        <button type="button" id="library-menu-button" class="ghost-icon" aria-haspopup="menu" aria-expanded="false" aria-controls="library-actions-menu"><span data-icon="settings"></span></button>
       </div>
     </header>
     <div class="workspace" id="workspace">
@@ -34,11 +33,11 @@
         </div>
         <div class="sidebar-footer" id="library-footer">
           <div class="library-row">
-            <button type="button" id="library-reveal" class="library-location">
+            <button type="button" id="library-picker-button" class="library-location" aria-haspopup="menu" aria-expanded="false" aria-controls="library-menu">
               <span class="library-location-icon" data-icon="hard-drive"></span>
               <span class="library-location-path" id="library-path" dir="ltr"></span>
             </button>
-            <button type="button" id="library-menu-button" class="plain-icon menu-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="library-menu"><span data-icon="ellipsis-vertical"></span></button>
+            <button type="button" id="sync" class="plain-icon menu-trigger"><span data-icon="refresh-cw"></span><span id="sync-label" class="visually-hidden">Scan and update</span></button>
           </div>
           <div class="activity" id="activity" hidden><span class="activity-fill" id="activity-fill"></span></div>
           <div id="library-menu" class="menu" role="menu" hidden>
@@ -46,8 +45,12 @@
             <div id="library-list" class="library-list" role="group" aria-label="Knowledge bases"></div>
             <div class="menu-separator" role="separator"></div>
             <button type="button" id="library-location" class="menu-item" role="menuitem"><span data-icon="folder-plus"></span><span id="library-location-label">Add knowledge base…</span></button>
-            <div class="menu-separator" role="separator"></div>
-            <button type="button" id="library-environment" class="menu-item" role="menuitem"><span data-icon="refresh-cw"></span><span id="library-environment-label">Check runtime</span><span class="menu-detail" id="library-environment-detail"></span></button>
+          </div>
+          <div id="library-actions-menu" class="menu" role="menu" hidden>
+            <button type="button" id="settings-scan" class="menu-item" role="menuitem"><span data-icon="refresh-cw"></span><span id="settings-scan-label">Scan and update</span></button>
+            <button type="button" id="hide-unsupported" class="menu-item" role="menuitemcheckbox" aria-checked="false"><span data-icon="eye-off"></span><span id="hide-unsupported-label">Hide unsupported files</span><span class="preference-check" aria-hidden="true"><span data-icon="check"></span></span></button>
+            <button type="button" id="open-directory" class="menu-item" role="menuitem"><span data-icon="folder-open"></span><span id="open-directory-label">Open source folder</span></button>
+            <button type="button" id="library-environment" class="menu-item" role="menuitem"><span data-icon="cpu"></span><span id="library-environment-label">Check runtime</span><span class="menu-detail" id="library-environment-detail"></span></button>
           </div>
         </div>
       </aside>
@@ -69,7 +72,7 @@
             <button type="button" id="column-modified" class="column-modified" data-column="modified">Date modified</button>
             <button type="button" id="column-type" class="column-type" data-column="type">Type</button>
             <button type="button" id="column-size" class="column-size" data-column="size">Size</button>
-            <span id="column-status" class="column-status">Index status</span>
+            <span id="column-status" class="column-status"><span id="column-status-label" class="sr-only">Index status</span></span>
           </div>
           <div id="documents" class="documents"></div><div id="list-end" class="list-end"></div>
         </div>
@@ -117,7 +120,6 @@
        list can never clip it. The tag list is its second level. -->
   <div id="row-menu" class="menu row-menu" role="menu" hidden>
     <p class="menu-caption" id="row-menu-note"></p>
-    <button type="button" id="row-open" class="menu-item" role="menuitem"><span data-icon="folder-open"></span><span id="row-open-label">Open in file manager</span></button>
     <button type="button" id="row-classify" class="menu-item has-submenu" role="menuitem" aria-haspopup="menu" aria-expanded="false"><span data-icon="tag"></span><span id="row-classify-label">Tags</span><span class="menu-caret" aria-hidden="true">›</span></button>
   </div>
   <div id="tag-context-menu" class="menu row-menu tag-context-menu" role="menu" hidden>

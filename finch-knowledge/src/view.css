@@ -146,7 +146,7 @@ svg { flex: none; width: 18px; height: 18px; }
 .directory-choice { display: flex; flex: 1; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 30px; padding: 4px 8px; border: 0; border-radius: var(--finch-radius-md, 10px); background: transparent; color: var(--finch-text-secondary, var(--fallback-muted)); text-align: left; }
 .directory-row > .directory-choice { padding-left: 4px; }
 .directory-choice svg { flex: none; width: 16px; height: 16px; }
-.directory-choice .tag-count { margin-left: auto; }
+.directory-choice .tag-count { flex: 0 0 32px; min-width: 32px; margin-left: auto; text-align: center; }
 .directory-choice.active { background: var(--finch-bg-active, var(--fallback-active)); color: var(--finch-accent, var(--fallback-accent)); }
 .directory-choice.active .tag-name { color: inherit; }
 .directory-choice:hover { background: var(--finch-bg-hover, var(--fallback-hover)); }
@@ -154,19 +154,21 @@ svg { flex: none; width: 18px; height: 18px; }
 .directory-toggle svg { width: 13px; height: 13px; }
 .directory-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
 .directory-toggle:disabled { visibility: hidden; }
-.directory-all { margin-bottom: 2px; padding-left: 10px; }
+.directory-all { padding-left: 10px; }
+.directory-row:has(> .directory-all) { margin-bottom: 2px; }
 .sidebar-footer {
   position: relative;
   display: grid;
   gap: 6px;
   /* The bottom inset matches the sides, so the box sits evenly inside the panel. */
   margin: 0 10px 10px;
-  padding: 6px 6px 6px 10px;
+  padding: 0;
   border: 1px solid var(--finch-border-subtle, var(--finch-border, var(--fallback-border)));
   border-radius: var(--finch-radius-md, 10px);
   background: var(--finch-bg-main, var(--fallback-main));
 }
-.library-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.library-row { position: relative; display: flex; align-items: stretch; min-width: 0; min-height: 44px; border-radius: inherit; }
+.library-row > .menu-trigger { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); }
 /* Progress lives inside the footer's existing bottom padding, never in its grid flow. */
 .activity { position: absolute; right: 10px; bottom: 3px; left: 10px; overflow: hidden; height: 3px; border-radius: 999px; background: var(--finch-bg-hover, var(--fallback-hover)); }
 .activity-fill { display: block; width: 4%; height: 100%; border-radius: 999px; background: var(--finch-accent, var(--fallback-accent)); transition: width .25s ease; }
@@ -177,8 +179,9 @@ svg { flex: none; width: 18px; height: 18px; }
   align-items: center;
   gap: 9px;
   min-width: 0;
-  padding: 2px 0;
+  padding: 8px 44px 8px 10px;
   border: 0;
+  border-radius: inherit;
   background: transparent;
   color: var(--finch-text-primary, var(--fallback-ink));
   text-align: left;
@@ -188,6 +191,7 @@ svg { flex: none; width: 18px; height: 18px; }
 .library-location-icon svg { width: 16px; height: 16px; }
 /* One line: the row carries the folder name only, and says what it is on hover. */
 .library-location-path { display: block; min-width: 0; overflow: hidden; color: var(--finch-text-primary, var(--fallback-ink)); font-family: var(--finch-font-mono, 'JetBrains Mono', ui-monospace, monospace); font-size: 11px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.library-location:hover, .library-location[aria-expanded="true"] { background: var(--finch-bg-hover, var(--fallback-hover)); }
 .library-location:hover .library-location-icon { color: var(--finch-accent, var(--fallback-accent)); }
 .sidebar-footer.warning .library-location-icon, .sidebar-footer.warning .library-location-path { color: var(--finch-danger, #bd4343); }
 .menu-trigger { flex: none; }
@@ -207,15 +211,34 @@ svg { flex: none; width: 18px; height: 18px; }
   box-shadow: var(--finch-shadow-md, 0 16px 40px #0003);
 }
 .library-list { max-height: min(300px, 40dvh); overflow-y: auto; overscroll-behavior: contain; }
-.library-entry { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; border-radius: var(--finch-radius-sm, 8px); }
+.library-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: var(--finch-radius-sm, 8px); }
 .library-entry:hover, .library-entry:focus-within { background: var(--finch-bg-hover, var(--fallback-hover)); }
-.library-choice { min-width: 0; min-height: 46px; gap: 6px; }
-.library-choice .library-entry-label { display: flex; flex: 1; flex-direction: column; gap: 2px; }
-.library-entry-name, .library-entry-root { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.library-entry-root { color: var(--finch-text-tertiary, var(--fallback-muted)); font-family: var(--finch-font-mono, 'JetBrains Mono', monospace); font-size: 10px; font-weight: 400; }
-.library-choice .library-entry-check { display: grid; flex: 0 0 16px; place-items: center; width: 16px; }
-.library-entry-check svg { width: 14px; height: 14px; }
-.library-choice[aria-checked="true"] { color: var(--finch-text-primary, var(--fallback-ink)); }
+.library-choice { min-width: 0; min-height: 38px; gap: 6px; }
+.library-entry-tail { position: relative; display: grid; place-items: center; width: 64px; height: 32px; margin-right: 3px; }
+.library-entry-controls { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 2px; opacity: 0; visibility: hidden; pointer-events: none; }
+.library-entry-state { display: inline-flex; align-items: center; justify-self: end; margin-right: 3px; gap: 4px; font-size: 10px; line-height: 1; color: var(--finch-text-tertiary, var(--fallback-muted)); white-space: nowrap; }
+.library-entry-state::before { content: ''; width: 4px; height: 4px; flex: none; border-radius: 50%; background: currentColor; }
+.library-entry-state[data-state="available"]::before { background: #69a983; }
+.library-entry-state[data-state="unavailable"] { color: #c59366; }
+.library-entry:hover .library-entry-controls, .library-entry:focus-within .library-entry-controls { opacity: 1; visibility: visible; pointer-events: auto; }
+.library-entry:hover .library-entry-state, .library-entry:focus-within .library-entry-state { opacity: 0; }
+.library-entry[data-selected="true"] { background: color-mix(in srgb, var(--finch-accent, var(--fallback-accent)) 14%, transparent); }
+@media (hover: none) {
+  .library-entry-tail { width: 124px; }
+  .library-entry-controls { left: auto; width: 60px; opacity: 1; visibility: visible; pointer-events: auto; }
+  .library-entry-state, .library-entry:hover .library-entry-state, .library-entry:focus-within .library-entry-state { position: absolute; right: 64px; max-width: 60px; opacity: 1; font-size: 9px; }
+}
+.library-manage { flex: 0 0 28px; width: 28px; height: 28px; color: var(--finch-text-secondary, var(--fallback-muted)); }
+.library-entry-controls .library-manage svg { width: 13px; height: 13px; }
+.library-manage[data-action="libraryRemove"]:hover { color: var(--danger, #dc635e); }
+.library-entry.editing .library-edit-main { grid-column: 1 / -1; }
+.library-edit-main { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 2px 8px; }
+.library-name-input { width: 100%; min-width: 0; height: 28px; padding: 3px 6px; border: 1px solid var(--finch-border, var(--fallback-border)); border-radius: 6px; background: var(--finch-bg-main, var(--fallback-bg)); color: inherit; font: inherit; }
+.library-name-input:focus, .library-name-input:focus-visible { outline: none; border-color: var(--finch-accent, var(--fallback-accent)); }
+.library-name-input[aria-invalid="true"] { border-color: var(--danger, #dc635e); }
+.library-choice .library-entry-label { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.library-entry-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-choice[aria-checked="true"] { color: var(--finch-accent, var(--fallback-accent)); }
 .menu-caption { margin: 0; padding: 7px 9px; color: var(--finch-text-tertiary, var(--fallback-muted)); font-size: 11px; line-height: 1.45; }
 /* The leading note in a row menu is a fact, not an action: no hover, no pointer. */
 .row-menu .menu-caption { pointer-events: none; }
@@ -225,6 +248,12 @@ svg { flex: none; width: 18px; height: 18px; }
 .menu-item > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Every menu uses the same full-row selection for pointer, keyboard and an open flyout. */
 .menu-item:not(:disabled):hover, .menu-item:not(:disabled):focus-visible, .menu-item[aria-expanded="true"] { background: var(--finch-bg-hover, var(--fallback-hover)); color: var(--finch-text-primary, var(--fallback-ink)); }
+/* A library is one interactive row, not a selected parent plus a hovered half-row. */
+.library-entry:has(.library-choice):hover, .library-entry:has(.library-choice):focus-within { background: var(--finch-bg-hover, var(--fallback-hover)); }
+.library-entry[data-selected="true"]:hover, .library-entry[data-selected="true"]:focus-within { background: color-mix(in srgb, var(--finch-accent, var(--fallback-accent)) 20%, transparent); }
+.library-entry[data-selected="true"] .library-choice:not(:disabled):hover, .library-entry[data-selected="true"] .library-choice:not(:disabled):focus-visible { color: var(--finch-accent, var(--fallback-accent)); }
+.library-entry .library-choice:not(:disabled):hover, .library-entry .library-choice:not(:disabled):focus-visible,
+.library-entry .library-manage:not(:disabled):hover, .library-entry .library-manage:not(:disabled):focus-visible { background: transparent; }
 .menu-item:focus-visible { outline: none; }
 .menu-item:disabled { cursor: default; opacity: .5; }
 .menu-item svg { color: inherit; }
@@ -442,7 +471,7 @@ button.doc-tag:focus-visible { outline: 2px solid var(--finch-accent, var(--fall
 .doc-status[data-state="ready"] { color: var(--finch-accent, var(--fallback-accent)); }
 .doc-status[data-state="failed"], .doc-status[data-state="source_missing"] { color: var(--finch-danger, #bd4343); }
 .doc-status[data-state="processing"] svg { animation: onboard-spin 1.1s linear infinite; }
-/* Status and actions share the trailing slot; visibility never changes layout width or height. */
+/* One fixed trailing slot: status at rest, actions on hover, focus or open menu. */
 .doc-tools { position: absolute; top: 50%; right: 9px; display: flex; flex: none; gap: 2px; align-items: center; transform: translateY(-50%); opacity: 0; visibility: hidden; pointer-events: none; }
 .doc:hover .doc-status, .doc:focus-within .doc-status, .doc.menu-open .doc-status { opacity: 0; visibility: hidden; pointer-events: none; }
 .doc:hover .doc-tools, .doc:focus-within .doc-tools, .doc.menu-open .doc-tools { opacity: 1; visibility: visible; pointer-events: auto; }
@@ -610,7 +639,19 @@ dialog::backdrop { background: color-mix(in srgb, var(--finch-bg-root, #17221e) 
 .issue-doc .doc-status > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-doc .doc-status svg { margin-top: 0; }
 .pending-doc { height: 46px; align-items: center; cursor: default; }
-.issue-doc:hover .doc-status, .issue-doc:focus-within .doc-status, .pending-doc:hover .doc-status, .pending-doc:focus-within .doc-status { opacity: 1; visibility: visible; pointer-events: auto; }
 
 /* Library choices must remain clickable outside a short sidebar's clipping boundary. */
 .library-picker-floating { position: fixed; right: auto; bottom: auto; z-index: 40; width: min(268px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; }
+
+/* Card and directory actions occupy fixed slots; no hover-driven layout shifts. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.activity { pointer-events: none; }
+.has-directory-action { position: relative; }
+.directory-open { position: absolute; right: 8px; top: 50%; width: 32px; height: 28px; transform: translateY(-50%); opacity: 0; visibility: hidden; pointer-events: none; }
+.directory-row .directory-open svg { width: 15px; height: 15px; }
+.has-directory-action:hover .directory-open, .has-directory-action:focus-within .directory-open { opacity: 1; visibility: visible; pointer-events: auto; }
+.has-directory-action:hover .tag-count, .has-directory-action:focus-within .tag-count { opacity: 0; }
+#hide-unsupported .preference-check { display: grid; place-items: center; margin-left: auto; }
+#hide-unsupported .preference-check svg { width: 13px; height: 13px; }
+#hide-unsupported[aria-checked="false"] .preference-check { visibility: hidden; }
+#sync[aria-busy="true"] > svg { animation: onboard-spin 1.1s linear infinite; }

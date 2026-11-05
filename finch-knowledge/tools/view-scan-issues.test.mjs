@@ -15,7 +15,7 @@ function fixture(locale = 'en-US') {
   let receive;
   const elements = new Map(), toasts = [];
   const byId = id => {
-    if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, attrs: {}, children: [], replaceChildren(...children) { this.children = children; }, setAttribute(key, value) { this.attrs[key] = value; } });
+    if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, attrs: {}, children: [], getBoundingClientRect: () => ({top:0,bottom:500}), replaceChildren(...children) { this.children = children; }, setAttribute(key, value) { this.attrs[key] = value; } });
     return elements.get(id);
   };
   const context = createContext({ isLibraryScoped,
