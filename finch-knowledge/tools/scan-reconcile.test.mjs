@@ -26,7 +26,9 @@ function fixture(platform = 'win32') {
   const listings = new Map([[key(root), []]]);
   const blocked = new Set(), docs = new Map(), vectors = new Set(), removed = [], imported = [], readDirectories = [];
   let rootInode = 1, checks = 0;
+  const probed=new Set();
   const lookup = async path => {
+    probed.add(key(path));
     if (blocked.has(key(path))) throw failure('EACCES');
     const found = nodes.get(key(path));
     if (!found) throw failure('ENOENT');
@@ -34,6 +36,7 @@ function fixture(platform = 'win32') {
   };
   const store = {
     directoryRoot: root,
+    assertScan:()=>{},beginSourceScan: async()=> 'scan', discoverSourceBatch:async()=>{}, recordScanMetadata:async()=>{},recordScanDirectory:()=>{},finishSourceScan:async()=>{},interruptSourceScan:()=>{},
     assertSourceAvailable: async () => { checks++; },
     list: async () => [...docs.values()],
     document: async id => docs.get(id),
@@ -45,6 +48,12 @@ function fixture(platform = 'win32') {
   };
   const context = createContext({ ...paths, setTimeout, clearTimeout, setImmediate, process: { platform }, ACCEPTED: ['.md', '.txt', '.pdf'], DEFAULT_TAG: 'default', INDEX_DIRECTORY: '.knowledge', IndexSkipError: class extends Error {},
     stat: lookup, lstat: lookup,
+    opendir: async path => {
+      readDirectories.push(path);
+      if(blocked.has(key(path)))throw failure('EACCES');
+      if(!listings.has(key(path)))throw failure('ENOENT');
+      return {async *[Symbol.asyncIterator](){yield* listings.get(key(path));}};
+    },
     readdir: async path => {
       readDirectories.push(path);
       if (blocked.has(key(path))) throw failure('EACCES');
@@ -55,7 +64,7 @@ function fixture(platform = 'win32') {
   runInContext(code, context);
   function tracked(path, id = 'doc') { docs.set(id, { id, path, tags: ['important'] }); vectors.add(id); return path; }
   function file(name) { const path = paths.join(root, name); nodes.set(key(path), info()); listings.get(key(root)).push(entry(name)); return path; }
-  return { root, paths, key, nodes, listings, blocked, docs, vectors, removed, imported, readDirectories, store, tracked, file,
+  return { root, paths, key, nodes, listings, blocked, docs, vectors, removed, imported, readDirectories, probed, store, tracked, file,
     scan: signal => context.scanSourceDirectory(store, undefined, signal),
     setRootInode: value => { rootInode = value; }, get checks() { return checks; },
   };
@@ -153,8 +162,9 @@ test('historical entries under excluded Windows system directories leave the cat
 test('ordinary folders with similar names are not silently excluded', async () => {
   const f = fixture(), name = 'System Volume Information notes', directory = f.paths.join(f.root, name);
   f.listings.get(f.key(f.root)).push(entry(name, 'directory'));
-  f.blocked.add(f.key(directory)); f.tracked(f.paths.join(directory, 'note.md'));
+  f.nodes.set(f.key(directory),info('directory')); f.blocked.add(f.key(directory)); f.tracked(f.paths.join(directory, 'note.md'));
   const result = await f.scan();
   assert.ok(result.unreachable.length); assert.equal(f.docs.size, 1);
-  assert.equal(f.readDirectories.length, 2);
+  assert.ok(f.probed.has(f.key(directory)),'ordinary similar names must reach the metadata safety probe');
+  assert.equal(f.readDirectories.length, 1,'a failed metadata guard must prevent directory enumeration');
 });

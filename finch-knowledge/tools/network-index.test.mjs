@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdir, mkdtemp, writeFile, readFile, readdir, rename, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, writeFile, readFile, readdir, rename, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fixtureLink, fixtureRm, nativeTarget } from './test-platform.mjs';
@@ -48,7 +48,7 @@ test('Linux CIFS and NFS mountinfo selects the longest matching decoded mountpoi
 });
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'knowledge-network-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'knowledge-network-')));
   const source = join(root, 'remote'), second = join(root, 'other-remote'), cache = join(root, 'local-cache');
   await mkdir(source); await mkdir(second);
   const engine = join(cache, 'lancedb-engine', '0.39.0'); await mkdir(engine, { recursive: true });
@@ -94,7 +94,7 @@ test('a disconnected source cannot clear the local catalogue, and reconnecting r
   const store = await f.open(); await scanSourceDirectory(store);
   const id = (await store.list())[0].id; const index = store.root;
   await rename(f.source, `${f.source}-offline`);
-  await assert.rejects(scanSourceDirectory(store), /ENOENT/); assert.equal((await store.list())[0].id, id);
+  await assert.rejects(scanSourceDirectory(store), {message:'The library folder is no longer on disk.'}); assert.equal((await store.list())[0].id, id);
   await assert.rejects(f.open(), /ENOENT/); assert.equal((await stat(join(index, 'catalog.sqlite'))).isFile(), true);
   await rename(`${f.source}-offline`, f.source); await store.close();
   assert.equal((await (await f.open()).list())[0].id, id);

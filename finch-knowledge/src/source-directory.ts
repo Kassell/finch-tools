@@ -1,9 +1,10 @@
-import { lstat, mkdir, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { ACCEPTED, DEFAULT_TAG, KnowledgeStore, MAX_FILE_BYTES, type SourceIssue } from './store.js';
 import { IndexSkipError, type IndexSkipReason } from './indexing-result.js';
 import { inspectSourceFilesystem, remoteIndexKey, remoteIndexRoot, type SourceFilesystem } from './index-location.js';
 import { hideKnowledgeDirectory } from './index-visibility.js';
+import { openIndexWithRebuild } from './index-rebuild.js';
 
 export const INDEX_DIRECTORY = '.knowledge';
 export interface ScanOutcome {
@@ -55,18 +56,20 @@ export async function openSourceDirectory(input: string, cachePath: string, opti
       if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error('Knowledge index data must not be a symbolic link.');
     }
   }
-  const entry = await lstat(index).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
-  if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) throw new Error('.knowledge must be a regular directory.');
-  await mkdir(index, { recursive: true });
-  for (const name of ['catalog.sqlite', 'catalog.sqlite-wal', 'catalog.sqlite-shm', 'vectors.lance']) {
-    const data = await lstat(join(index, name)).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
-    if (data?.isSymbolicLink()) throw new Error('Knowledge index data must not be a symbolic link.');
-  }
-  const sourceGuard = filesystem.network ? async () => {
-    const current = await (options.sourceFilesystem ?? inspectSourceFilesystem)(root);
-    if (!current.network || current.identity !== filesystem.identity) throw new Error('The network source is disconnected or mapped to a different share. Reconnect the original share and retry.');
-  } : undefined;
-  const store = new KnowledgeStore(index, { ...options, cachePath: engineCache, directoryRoot: root, remoteIndexKey: indexKey, sourceGuard });
+  let sourceProbe: Promise<void> | undefined;
+  const sourceGuard = (): Promise<void> => {
+    if (!sourceProbe) sourceProbe = (async () => {
+      // Missing roots must fail before querying network mappings or touching cached indexes.
+      const info = await stat(root).catch(() => null);
+      if (!info?.isDirectory()) throw new Error('The library folder is no longer on disk.');
+      if (filesystem.network) {
+        const current = await (options.sourceFilesystem ?? inspectSourceFilesystem)(root);
+        if (!current.network || current.identity !== filesystem.identity) throw new Error('The network source is disconnected or mapped to a different share. Reconnect the original share and retry.');
+      }
+    })().finally(() => { sourceProbe = undefined; });
+    return sourceProbe;
+  };
+  const store = await openIndexWithRebuild(index, { ...options, cachePath: engineCache, directoryRoot: root, remoteIndexKey: indexKey, sourceGuard });
   if (!indexKey && !(await hideKnowledgeDirectory(index))) {
     try { options.onVisibilityWarning?.(); } catch { /* Visibility warnings must not close a usable index. */ }
   }
@@ -78,6 +81,7 @@ export interface ScanCheckpoint { completed: number; total: number; changed?: bo
 export interface ScanOptions {
   onCheckpoint?: (state: ScanCheckpoint) => void | Promise<void>;
   onDiscover?: (count: number) => void;
+  onCatalogBatch?: (state: {discovered:number;catalogVersion:number}) => void | Promise<void>;
   yieldMs?: number;
 }
 export async function scanSourceDirectory(store: KnowledgeStore, report?: (message: string, percent: number) => void, signal?: AbortSignal, options: ScanOptions = {}): Promise<ScanOutcome> {
@@ -88,46 +92,79 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
   await store.assertSourceAvailable();
   // A root that went offline or changed mounts must not wipe the catalogue.
   const rootInfo = await stat(root, { bigint: true });
-  const documents = await store.list();
+  const run=await store.beginSourceScan(rootInfo,signal);
+  try {
   const files: Array<{ path: string; size: number }> = [];
   let discovered = 0;
   options.onDiscover?.(0);
-  const folders: string[] = [];
-  const issues: SourceIssue[] = [];
+  let pendingFolders: string[] = [];
+  let pendingFiles: Array<{path:string;kind:'pending'|'unsupported'}> = [];
+  let lastFlush=Date.now();
+  async function flush():Promise<void>{
+    if(signal?.aborted||(!pendingFolders.length&&!pendingFiles.length))return;
+    await store.discoverSourceBatch(run,pendingFolders,pendingFiles,rootInfo,signal);
+    pendingFolders=[];pendingFiles=[];lastFlush=Date.now();
+    await options.onCatalogBatch?.({discovered,catalogVersion:store.catalogVersion});
+    options.onDiscover?.(discovered);
+    await new Promise<void>(done=>setImmediate(done));
+  }
   const sourceKey = (path: string) => relative(root, path).split(sep).join('/');
   const seen = new Set<string>();
   const unsupported = new Set<string>();
   const blocked: string[] = [];
-  const inventoried = new Set<string>();
+  const inventoried = new Map<string,{dev:bigint;ino:bigint}>();
   async function walk(directory: string): Promise<void> {
     if (signal?.aborted) return;
-    let entries;
-    try { entries = await readdir(directory, { withFileTypes: true }); }
-    catch { blocked.push(directory); outcome.unreachable.push(relative(root!, directory) || root!); issues.push({ path: sourceKey(directory), kind: 'unavailable', reason: '' }); return; }
-    inventoried.add(pathKey(directory));
-    for (const entry of entries) {
+    await flush();if(signal?.aborted)return;
+    let entries,directoryInfo;
+    try { directoryInfo=await lstat(directory,{bigint:true});if(directoryInfo.isSymbolicLink()||!directoryInfo.isDirectory())throw new Error('Source directory changed.');entries=await opendir(directory); }
+    catch { blocked.push(directory);outcome.unreachable.push(relative(root!,directory)||root!);store.recordScanDirectory(run,sourceKey(directory),false);return; }
+    const iterator=entries[Symbol.asyncIterator]();
+    let complete=true;
+    try { while(!signal?.aborted) {
+      let next:Awaited<ReturnType<typeof iterator.next>>;
+      try{next=await iterator.next();}
+      catch{complete=false;blocked.push(directory);outcome.unreachable.push(relative(root!,directory)||root!);break;}
+      if(next.done)break;
+      const entry=next.value!;
       if (signal?.aborted) return;
       const path = join(directory, entry.name);
       if (entry.name === INDEX_DIRECTORY || entry.name.startsWith('.')) continue;
       if (entry.isDirectory() && ignoredSourceDirectory(entry.name)) continue;
       if (entry.isSymbolicLink()) { blocked.push(path); continue; }
-      if (entry.isDirectory()) { folders.push(sourceKey(path)); await walk(path); }
+      if (entry.isDirectory()) { pendingFolders.push(sourceKey(path)); await flush(); await walk(path); }
       else if (entry.isFile()) {
         if (ACCEPTED.includes(extname(path).toLowerCase())) {
           seen.add(pathKey(path));
-          const info = await lstat(path).catch(() => null);
-          files.push({ path, size: info?.size ?? Number.MAX_SAFE_INTEGER });
-        } else { unsupported.add(pathKey(path)); issues.push({ path: sourceKey(path), kind: 'unsupported', reason: '' }); }
-        if (++discovered % 100 === 0) { options.onDiscover?.(discovered); await new Promise<void>(done => setImmediate(done)); }
+          files.push({ path, size: Number.MAX_SAFE_INTEGER });
+          pendingFiles.push({path:sourceKey(path),kind:'pending'});
+        } else { unsupported.add(pathKey(path)); pendingFiles.push({path:sourceKey(path),kind:'unsupported'}); }
+        discovered++;
+        if(pendingFiles.length+pendingFolders.length>=200||Date.now()-lastFlush>=150)await flush();
       }
+    }}finally{await iterator.return?.();}
+    if(!signal?.aborted){
+      const current=await lstat(directory,{bigint:true}).catch(()=>null);
+      if(!current?.isDirectory()||current.isSymbolicLink()||current.dev!==directoryInfo.dev||current.ino!==directoryInfo.ino){complete=false;blocked.push(directory);outcome.unreachable.push(sourceKey(directory)||root);}
+      await flush();if(!signal?.aborted){if(complete)inventoried.set(pathKey(directory),directoryInfo);store.recordScanDirectory(run,sourceKey(directory),complete,directoryInfo);}
     }
   }
   await walk(root);
   if (signal?.aborted) return outcome;
   options.onDiscover?.(discovered);
-  // Inventory is cheap and engine-free. Pending files are counted, but are not exceptions.
-  await store.replaceSourceInventory(folders, [...issues, ...files.map(({ path }) => ({ path: sourceKey(path), kind: 'pending' as const, reason: '' }))], blocked.map(sourceKey), rootInfo, signal);
   await options.onCheckpoint?.({ completed: 0, total: files.length });
+  if(signal?.aborted)return outcome;
+  // Metadata is bounded and happens after discovery is already visible, never before a batch.
+  let metadataIndex=0;
+  const metadata:Array<{path:string;size:number;mtimeMs:number}>=[];
+  async function flushMetadata():Promise<void>{if(signal?.aborted||!metadata.length)return;await store.recordScanMetadata(run,metadata.splice(0,200),rootInfo,signal);await options.onCatalogBatch?.({discovered,catalogVersion:store.catalogVersion});}
+  await Promise.all(Array.from({length:Math.min(store.indexStorage==='local'?2:4,files.length)},async()=>{
+    while(metadataIndex<files.length&&!signal?.aborted){const file=files[metadataIndex++]!;const info=await lstat(file.path).catch(()=>null);file.size=info?.size??Number.MAX_SAFE_INTEGER;
+      if(info?.isFile())metadata.push({path:sourceKey(file.path),size:info.size,mtimeMs:info.mtimeMs});
+      if(metadata.length>=32)await flushMetadata();}
+  }));
+  await flushMetadata();if(signal?.aborted)return outcome;
+  const documents = await store.list(true);
   files.sort((a, b) => a.size - b.size || a.path.localeCompare(b.path));
   async function sourcePresence(path: string): Promise<'present' | 'missing' | 'unsupported' | 'unavailable'> {
     if (!inside(root, path)) return 'unavailable';
@@ -146,12 +183,12 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
     let parent = dirname(path);
     while (inside(root, parent)) {
       if (blocked.some(directory => inside(directory, parent))) return 'unavailable';
-      const info = await lstat(parent).catch((error: NodeJS.ErrnoException) => {
+      const info = await lstat(parent,{bigint:true}).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
         throw error;
       }).catch(() => undefined);
       if (info === undefined || info?.isSymbolicLink()) return 'unavailable';
-      if (info?.isDirectory()) return inventoried.has(pathKey(parent)) ? 'missing' : 'unavailable';
+      if (info?.isDirectory()) {const captured=inventoried.get(pathKey(parent));return captured&&String(captured.dev)===String(info.dev)&&String(captured.ino)===String(info.ino)?'missing':'unavailable';}
       if (parent === root) break;
       parent = dirname(parent);
     }
@@ -168,34 +205,40 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
   for (const [index, file] of files.entries()) {
     const { path } = file;
     if (signal?.aborted) return outcome;
+    store.assertScan(run);
     const name = relative(root, path);
     report?.(name, Math.floor(index / Math.max(files.length, 1) * 100));
     let issue: SourceIssue | null = null;
     let changed = false;
     try {
       const candidates = [...missing.values()].filter(doc => basename(doc.path) === basename(path)).map(doc => doc.id);
-      const moved = await store.relocateSource(path, candidates);
+      const moved = await store.relocateSource(path, candidates, signal);
+      if (signal?.aborted) return outcome;
       if (moved) { changed = true; missing.delete(moved); outcome.moved.push(name); }
-      const indexed = await store.importFile(path, basename(path), DEFAULT_TAG);
+      const indexed = await store.importFile(path, basename(path), DEFAULT_TAG, signal);
       if (indexed.unchanged) outcome.unchanged++; else { changed = true; outcome.updated.push(name); }
     } catch (error) {
+      if (signal?.aborted) return outcome;
       if (error instanceof IndexSkipError) {
         outcome.skipped.push({ name, reason: error.reason });
-        issue = { path: sourceKey(path), kind: error.reason, reason: '' }; issues.push(issue);
+        issue = { path: sourceKey(path), kind: error.reason, reason: '' };
       } else {
         const reason = error instanceof Error ? error.message : String(error);
         outcome.failed.push({ name, reason });
-        issue = { path: sourceKey(path), kind: 'failed', reason }; issues.push(issue);
+        issue = { path: sourceKey(path), kind: 'failed', reason };
       }
     }
+    if (signal?.aborted) return outcome;
+    store.assertScan(run);
     if (!await store.settleSourceFile(sourceKey(path), issue, rootInfo)) { outcome.unreachable.push(root); return outcome; }
     await options.onCheckpoint?.({ completed: index + 1, total: files.length, changed: changed || issue !== null });
-    // One file at a time with a cooperative gap: UI/search work wins over bulk indexing.
-    const delay = Math.max(0, Math.min(1000, options.yieldMs ?? 25));
+    // Yield without adding a fixed delay to every unchanged file in a large directory.
+    const delay = Math.max(0, Math.min(1000, options.yieldMs ?? 0));
     if (delay && !signal?.aborted) await new Promise<void>(done => {
       const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', finish); done(); };
       const timer = setTimeout(finish, delay); signal?.addEventListener('abort', finish, { once: true });
     });
+    else await new Promise<void>(done => setImmediate(done));
   }
   if (signal?.aborted) return outcome;
   await store.assertSourceAvailable();
@@ -208,12 +251,14 @@ export async function scanSourceDirectory(store: KnowledgeStore, report?: (messa
     if (signal?.aborted) return outcome;
     const presence = await sourcePresence(doc.path);
     const current = await store.document(doc.id);
+    store.assertScan(run);
     if ((presence === 'missing' || presence === 'unsupported') && current?.path === doc.path) {
       await store.remove(doc.id);
       outcome.removed.push(relative(root, doc.path));
     } else if (presence === 'unavailable') outcome.unreachable.push(relative(root, doc.path));
   }
-  if (!signal?.aborted) await store.replaceSourceInventory(folders, issues, blocked.map(sourceKey), rootInfo, signal);
+  if (!signal?.aborted) await store.finishSourceScan(run,blocked.map(sourceKey),rootInfo,signal);
   report?.('', 100);
   return outcome;
+  } finally { store.interruptSourceScan(run); }
 }
