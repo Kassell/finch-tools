@@ -24,7 +24,7 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
  * real money and time, so it has to be asked for — the system prompt says the
  * same thing so the agent does not "helpfully" render at max quality.
  */
-const DEFAULT_MODEL = 'gpt-image-2.5-flare';
+const DEFAULT_MODEL = 'gpt-image-2.6-flare';
 const DEFAULT_QUALITY = 'low';
 const DEFAULT_SIZE = '1024x1024';
 
@@ -57,28 +57,41 @@ const SIZE_CHOICES = [
  * hover text: a tooltip on hover would cover the neighbouring rows.
  */
 const MODEL_CHOICES: Array<{ id: string; labelKey: string; family: string }> = [
+  { id: 'gpt-image-2.6-flare', labelKey: 'model.flare', family: 'Image 2.6' },
+  { id: 'gpt-image-2.6-sunburst', labelKey: 'model.sunburst', family: 'Image 2.6' },
   { id: 'gpt-image-2.5-flare', labelKey: 'model.flare', family: 'Image 2.5' },
   { id: 'gpt-image-2.5-sunburst', labelKey: 'model.sunburst', family: 'Image 2.5' },
   { id: 'gpt-image-2', labelKey: 'model.previous', family: 'Image 2' },
   { id: 'gpt-image-1.5', labelKey: 'model.legacy', family: 'Image 1.5' },
 ];
 
+/**
+ * `flare` / `sunburst` mean the current generation, so they move with it; the
+ * dated families keep an explicit prefix. A bare `gpt-image-2.6` names two
+ * variants and is never guessed at — `resolveModel` falls back instead.
+ */
 const MODEL_ALIASES: Record<string, string> = {
-  sunburst: 'gpt-image-2.5-sunburst',
-  'gpt-image-sunburst': 'gpt-image-2.5-sunburst',
-  flare: 'gpt-image-2.5-flare',
-  'gpt-image-flare': 'gpt-image-2.5-flare',
-  'gpt-image-2.5-sun': 'gpt-image-2.5-sunburst',
+  flare: 'gpt-image-2.6-flare',
+  sunburst: 'gpt-image-2.6-sunburst',
+  'gpt-image-flare': 'gpt-image-2.6-flare',
+  'gpt-image-sunburst': 'gpt-image-2.6-sunburst',
+  'gpt-image-2.6-fl': 'gpt-image-2.6-flare',
+  'gpt-image-2.6-sun': 'gpt-image-2.6-sunburst',
+  '2.6-flare': 'gpt-image-2.6-flare',
+  '2.6-sunburst': 'gpt-image-2.6-sunburst',
   'gpt-image-2.5-fl': 'gpt-image-2.5-flare',
+  'gpt-image-2.5-sun': 'gpt-image-2.5-sunburst',
+  '2.5-flare': 'gpt-image-2.5-flare',
+  '2.5-sunburst': 'gpt-image-2.5-sunburst',
 };
 
 /** Resolve a user/AI-supplied model name to a concrete model id. */
 export function resolveModel(raw: unknown, fallback: string = DEFAULT_MODEL): string {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   if (!value) return fallback;
-  // "gpt-image-2.5" on its own does not name a variant — honour whatever the
-  // user configured rather than silently picking one of the two.
-  if (value === 'gpt-image-2.5') return fallback;
+  // A bare family name ("gpt-image-2.6") does not name a variant — honour what
+  // the user configured rather than silently picking one of the two.
+  if (value === 'gpt-image-2.6' || value === 'gpt-image-2.5') return fallback;
   return MODEL_ALIASES[value] ?? value;
 }
 
@@ -157,10 +170,13 @@ const QUALITY_ENUM = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const BACKGROUND_ENUM = ['auto', 'opaque', 'transparent'] as const;
 const FORMAT_ENUM = ['png', 'jpeg', 'webp'] as const;
 const MODERATION_ENUM = ['auto', 'low'] as const;
+/** Planning effort, independent of the rendering quality (`complexity`). */
+const COMPLEXITY_ENUM = ['low', 'medium', 'high'] as const;
 
 type QualityOption = (typeof QUALITY_ENUM)[number];
 type BackgroundOption = (typeof BACKGROUND_ENUM)[number];
 type FormatOption = (typeof FORMAT_ENUM)[number];
+type ComplexityOption = (typeof COMPLEXITY_ENUM)[number];
 
 const EXT_BY_FORMAT: Record<FormatOption, string> = { png: 'png', jpeg: 'jpg', webp: 'webp' };
 
@@ -316,6 +332,7 @@ async function callEdit(
   fields: Record<string, string>,
   referenceImagePaths: string[],
   maskPath: string | undefined,
+  markupPath: string | undefined,
   signal: AbortSignal | undefined,
   started: () => void,
 ): Promise<OpenAiImageResponse> {
@@ -328,6 +345,12 @@ async function callEdit(
   if (maskPath) {
     const buf = await fs.readFile(maskPath);
     form.append('mask', new Blob([buf], { type: mimeForPath(maskPath) }), path.basename(maskPath));
+  }
+  if (markupPath) {
+    // A transparent PNG laid over the first image: the marks guide the edit
+    // without being part of the picture the model starts from.
+    const buf = await fs.readFile(markupPath);
+    form.append('markup', new Blob([buf], { type: mimeForPath(markupPath) }), path.basename(markupPath));
   }
   // Announced here, not at the top: reading (and about to upload) the
   // reference images is preparation, not generation.
@@ -1030,8 +1053,10 @@ interface CreateImageInput {
   prompt: string;
   reference_image_paths?: string[];
   mask_path?: string;
+  markup_path?: string;
   size?: string;
   quality?: string;
+  complexity?: string;
   background?: string;
   output_format?: string;
   output_compression?: number;
@@ -1091,7 +1116,12 @@ export function activate(ctx: finch.MiniToolContext): void {
           mask_path: {
             type: 'string',
             description:
-              'Optional local absolute path to a mask PNG marking the area to edit. Must have the same format and size as the reference image. Requires reference_image_paths.',
+              'Optional local absolute path to a mask PNG marking the area to edit. Must have the same format and size as the reference image. Requires reference_image_paths. Cannot be combined with markup_path.',
+          },
+          markup_path: {
+            type: 'string',
+            description:
+              'Optional local absolute path to a transparent PNG laid over the FIRST reference image as an editing guide (arrows, circles, text marks — GPT Image 2.5/2.6). Must match that image\'s dimensions and contain transparent pixels. Requires reference_image_paths and cannot be combined with mask_path.',
           },
           size: {
             type: 'string',
@@ -1101,7 +1131,13 @@ export function activate(ctx: finch.MiniToolContext): void {
             type: 'string',
             enum: QUALITY_ENUM as unknown as string[],
             description:
-              'Quality/cost tradeoff: low (fast drafts), medium, high, xhigh, max (GPT Image 2.5 only), or auto (default).',
+              'Quality/cost tradeoff: low (fast drafts), medium, high, xhigh, max (GPT Image 2.5 and 2.6), or auto. Omit to use the configured default.',
+          },
+          complexity: {
+            type: 'string',
+            enum: COMPLEXITY_ENUM as unknown as string[],
+            description:
+              'How much planning the model spends on the image, independent of the rendering quality: low, medium, or high. Omit for the model default — since planning also costs time, only raise it when the composition really needs it.',
           },
           background: {
             type: 'string',
@@ -1128,8 +1164,8 @@ export function activate(ctx: finch.MiniToolContext): void {
           n: {
             type: 'number',
             minimum: 1,
-            maximum: 4,
-            description: 'Number of images to generate, 1-4. Default 1.',
+            maximum: 10,
+            description: 'Number of images to generate, 1-10. Default 1.',
           },
           partial_images: {
             type: 'number',
@@ -1141,7 +1177,7 @@ export function activate(ctx: finch.MiniToolContext): void {
           model: {
             type: 'string',
             description:
-              'Image model id, e.g. "gpt-image-2.5-sunburst" (editing precision, default), "gpt-image-2.5-flare" (fast everyday), "gpt-image-2". Shorthands "sunburst" / "flare" also work. Omit to use the configured default.',
+              'Image model id, e.g. "gpt-image-2.6-flare" (fast everyday, default), "gpt-image-2.6-sunburst" (editing precision), "gpt-image-2.5-flare" / "gpt-image-2.5-sunburst" (previous generation), "gpt-image-2", "gpt-image-1.5". Shorthands "flare" / "sunburst" mean the current generation. Omit to use the configured default.',
           },
           output_name: {
             type: 'string',
@@ -1206,9 +1242,24 @@ export function activate(ctx: finch.MiniToolContext): void {
           ? input.reference_image_paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
           : [];
         const maskPath = typeof input.mask_path === 'string' && input.mask_path.trim() ? input.mask_path.trim() : undefined;
+        const markupPath = typeof input.markup_path === 'string' && input.markup_path.trim() ? input.markup_path.trim() : undefined;
         if (maskPath && !refPaths.length) {
           return {
             content: [{ type: 'text', text: 'mask_path needs reference_image_paths — a mask only applies to an image edit.' }],
+            isError: true,
+          };
+        }
+        // The docs put markup on the same footing as a mask: both modify the
+        // first input image, and they cannot be combined.
+        if (markupPath && !refPaths.length) {
+          return {
+            content: [{ type: 'text', text: 'markup_path needs reference_image_paths — markup is laid over the first input image.' }],
+            isError: true,
+          };
+        }
+        if (markupPath && maskPath) {
+          return {
+            content: [{ type: 'text', text: 'markup_path cannot be combined with mask_path — use one or the other.' }],
             isError: true,
           };
         }
@@ -1221,11 +1272,15 @@ export function activate(ctx: finch.MiniToolContext): void {
           };
         }
 
-        const n = clampInt(input.n, 1, 4, 1);
+        const n = clampInt(input.n, 1, 10, 1);
         const partialImages = clampInt(input.partial_images, 0, 3, 0);
         const background = pickEnum(input.background, BACKGROUND_ENUM, 'auto' as BackgroundOption);
         let format = pickEnum(input.output_format, FORMAT_ENUM, 'png' as FormatOption);
         if (background === 'transparent' && format === 'jpeg') format = 'png';
+        // Only forward values the API documents: an unknown complexity is dropped
+        // rather than sent as a guess.
+        const rawComplexity = typeof input.complexity === 'string' ? input.complexity.trim().toLowerCase() : '';
+        const complexity = (COMPLEXITY_ENUM as readonly string[]).includes(rawComplexity) ? rawComplexity : '';
         const compression = clampInt(input.output_compression, 0, 100, -1);
         const moderation = pickEnum(input.moderation, MODERATION_ENUM, 'auto');
         const safetyIdentifier =
@@ -1250,11 +1305,13 @@ export function activate(ctx: finch.MiniToolContext): void {
         if (input.output_format !== undefined) optional.output_format = format;
         if (compression >= 0 && (format === 'jpeg' || format === 'webp')) optional.output_compression = compression;
         if (input.moderation !== undefined && moderation !== 'auto') optional.moderation = moderation;
+        if (complexity) optional.complexity = complexity;
         if (safetyIdentifier) optional.safety_identifier = safetyIdentifier;
 
         try {
           for (const refPath of refPaths) await fs.access(refPath);
           if (maskPath) await fs.access(maskPath);
+          if (markupPath) await fs.access(markupPath);
 
           const stage = refPaths.length ? 'editing' : 'generating';
           const baseMessage = refPaths.length ? t('progress.editing') : t('progress.generating');
@@ -1272,6 +1329,7 @@ export function activate(ctx: finch.MiniToolContext): void {
                     { model, prompt, size, quality, n: String(n), ...optional },
                     refPaths,
                     maskPath,
+                    markupPath,
                     exec.signal,
                     started,
                   )
@@ -1347,6 +1405,8 @@ export function activate(ctx: finch.MiniToolContext): void {
             ...(moderation !== 'auto' ? [`moderation: ${moderation}`] : []),
             ...(refPaths.length ? [`references: ${refPaths.length}`] : []),
             ...(maskPath ? ['masked: yes'] : []),
+            ...(markupPath ? ['markup: yes'] : []),
+            ...(complexity ? [`complexity: ${complexity}`] : []),
           ];
           const lines = [
             `${t('result.generated', { count: String(savedPaths.length) })} via ${baseUrl}.`,

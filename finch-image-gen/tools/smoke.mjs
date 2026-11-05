@@ -265,11 +265,11 @@ const base = { prompt: 'a red square' };
 // 1 — defaults: the cheapest combination, and only the broadly supported knobs.
 {
   const { call, text, reports } = await run(base);
-  check('default model is the cheap gpt-image-2.5-flare', call.json.model === 'gpt-image-2.5-flare', call.json.model);
+  check('default model is the cheap gpt-image-2.6-flare', call.json.model === 'gpt-image-2.6-flare', call.json.model);
   check('default size/quality are the cheap 1024x1024 / low', call.json.size === '1024x1024' && call.json.quality === 'low', `${call.json.size} ${call.json.quality}`);
   check('optional knobs stay omitted', call.json.background === undefined && call.json.output_format === undefined && call.json.moderation === undefined);
   check('hits /images/generations', call.url.endsWith('/v1/images/generations'), call.url);
-  check('result lists a saved file', text.includes('.png') && text.includes('model: gpt-image-2.5-flare'), text.slice(0, 120));
+  check('result lists a saved file', text.includes('.png') && text.includes('model: gpt-image-2.6-flare'), text.slice(0, 120));
   // Finch draws its dedicated image-generation animation for this kind, sized
   // from the requested pixels — a plain progress bar reads as generic work.
   check('progress asks for the image component', reports[0]?.kind === 'image' && reports[0]?.stage === 'generating', JSON.stringify(reports[0]));
@@ -304,7 +304,7 @@ const base = { prompt: 'a red square' };
   check('stored default model is used', call.json.model === 'gpt-image-2.5-flare', call.json.model);
   check('stored default quality is used', call.json.quality === 'high', call.json.quality);
   const alias = await run({ prompt: 'x', model: 'sunburst' });
-  check('model shorthand sunburst resolves', alias.call.json.model === 'gpt-image-2.5-sunburst', alias.call.json.model);
+  check('model shorthand sunburst resolves to the current generation', alias.call.json.model === 'gpt-image-2.6-sunburst', alias.call.json.model);
   const relay = await run({ prompt: 'x', model: 'my-relay-model' });
   check('unknown model ids pass through untouched', relay.call.json.model === 'my-relay-model');
   await store.delete('defaultModel');
@@ -346,7 +346,9 @@ const base = { prompt: 'a red square' };
   check('an edit reads its reference image before claiming to draw', call.reportsBeforeSend === 1, String(call.reportsBeforeSend));
   check('reference image is attached', call.formKeys === 1, String(call.formKeys));
   check('mask is attached', call.form.mask !== undefined && call.form.mask.name === 'ref.png', JSON.stringify(call.form.mask));
-  check('n is clamped to 4', call.form.n === '4', call.form.n);
+  check('n passes through up to 10', call.form.n === '9', call.form.n);
+  const lots = await run({ ...base, reference_image_paths: [refPath], n: 99 });
+  check('n is clamped to 10', lots.call.form.n === '10', lots.call.form.n);
   const noRef = await run({ ...base, mask_path: refPath });
   check('mask without references is rejected', noRef.result.isError === true && calls.length === 0, noRef.text);
   const missing = await run({ ...base, reference_image_paths: [join(storagePath, 'nope.png')] });
@@ -361,6 +363,27 @@ const base = { prompt: 'a red square' };
   const many = Array.from({ length: 17 }, () => refPath);
   const tooMany = await run({ ...base, reference_image_paths: many });
   check('more than 16 references is refused before any request', tooMany.result.isError === true && tooMany.text.includes('16') && calls.length === 0, tooMany.text);
+
+  // Markup: a transparent overlay that guides the edit of the first image.
+  const markupPath = join(storagePath, 'markup.png');
+  await writeFile(markupPath, PNG_1PX);
+  const markup = await run({ ...base, reference_image_paths: [refPath], markup_path: markupPath });
+  check('markup travels as its own form part', markup.call.form.markup !== undefined && markup.call.form.markup.name === 'markup.png', JSON.stringify(markup.call.form.markup));
+  check('markup is reported back in the result', markup.text.includes('markup: yes'), markup.text);
+  const markupNoRef = await run({ ...base, markup_path: markupPath });
+  check('markup without a reference image is rejected', markupNoRef.result.isError === true && calls.length === 0, markupNoRef.text);
+  const bothGuides = await run({ ...base, reference_image_paths: [refPath], markup_path: markupPath, mask_path: refPath });
+  check('markup and mask cannot be combined', bothGuides.result.isError === true && calls.length === 0, bothGuides.text);
+  const ghostMarkup = await run({ ...base, reference_image_paths: [refPath], markup_path: join(storagePath, 'nope-markup.png') });
+  check('a missing markup file is reported', ghostMarkup.result.isError === true && calls.length === 0);
+
+  // Planning effort is a separate knob: forwarded only when asked for.
+  const planned = await run({ ...base, complexity: 'high' });
+  check('complexity is forwarded when asked for', planned.call.json.complexity === 'high', JSON.stringify(planned.call.json.complexity));
+  const unplanned = await run(base);
+  check('complexity stays out of the request by default', unplanned.call.json.complexity === undefined, JSON.stringify(unplanned.call.json.complexity));
+  const bogus = await run({ ...base, complexity: 'extreme' });
+  check('an unknown complexity is dropped rather than sent', bogus.call.json.complexity === undefined, JSON.stringify(bogus.call.json.complexity));
 }
 
 // 6 — error mapping the model has to act on.
@@ -431,8 +454,8 @@ const base = { prompt: 'a red square' };
   check('non-ascii output_name falls back to the default prefix', named.text.split('\n').pop().includes('/image-gen-'), named.text.split('\n').pop());
   const named2 = await run({ ...base, output_name: 'coffee poster v2' });
   check('output_name is sanitized to a safe prefix', named2.text.split('\n').pop().includes('/coffee-poster-v2-'), named2.text.split('\n').pop());
-  check('resolveModel keeps unknown ids verbatim', resolveModel('gpt-image-2') === 'gpt-image-2' && resolveModel('') === 'gpt-image-2.5-flare');
-  check('bare gpt-image-.5 alias maps to the fallback model', resolveModel('gpt-image-2.5') === 'gpt-image-2.5-flare', resolveModel('gpt-image-2.5'));
+  check('resolveModel keeps unknown ids verbatim', resolveModel('gpt-image-2') === 'gpt-image-2' && resolveModel('') === 'gpt-image-2.6-flare');
+  check('a bare family name maps to the fallback model', resolveModel('gpt-image-2.6') === 'gpt-image-2.6-flare' && resolveModel('gpt-image-2.5') === 'gpt-image-2.6-flare', resolveModel('gpt-image-2.6'));
 }
 
 // 9 — the gallery: what gets recorded, and the panel bridge.
@@ -443,7 +466,7 @@ const base = { prompt: 'a red square' };
   const gallery = JSON.parse(readFileSync(galleryFile, 'utf8'));
   const record = gallery.find((item) => item.filePath === filePath);
   check('generation is recorded in gallery.json', !!record, galleryFile);
-  check('record carries the badge data', record.model === 'gpt-image-2.5-flare' && record.quality === 'medium' && record.size === '1536x1024', JSON.stringify(record).slice(0, 160));
+  check('record carries the badge data', record.model === 'gpt-image-2.6-flare' && record.quality === 'medium' && record.size === '1536x1024', JSON.stringify(record).slice(0, 160));
   check('record carries the real pixel size', record.width === 1 && record.height === 1, `${record.width}x${record.height}`);
   check('record carries the session it came from', record.sessionId === 'sess-1' && record.prompt === 'a blue circle');
   check('newest record is first', gallery[0].filePath === filePath);
@@ -608,6 +631,8 @@ panelSent = sent;
   // Long model names made the menu unreadable: the row is the variant name with
   // its family as the trailing text, and the explanation moved to hover.
   const expectedModels = [
+    `${locale['model.flare']}|Image 2.6`,
+    `${locale['model.sunburst']}|Image 2.6`,
     `${locale['model.flare']}|Image 2.5`,
     `${locale['model.sunburst']}|Image 2.5`,
     `${locale['model.previous']}|Image 2`,
@@ -722,8 +747,8 @@ panelSent = sent;
   check('choosing a size preset stores it directly', (await store.get('defaultSize')) === '1280x720', String(await store.get('defaultSize')));
   await composerMenu.execute(scoped, 'quality:high', { composer: {}, navigation: {} });
   check('choosing a quality stores it directly', (await store.get('defaultQuality')) === 'high', String(await store.get('defaultQuality')));
-  await composerMenu.execute(scoped, 'model:gpt-image-2.5-sunburst', { composer: {}, navigation: {} });
-  check('choosing a model stores it directly', (await store.get('defaultModel')) === 'gpt-image-2.5-sunburst', String(await store.get('defaultModel')));
+  await composerMenu.execute(scoped, 'model:gpt-image-2.6-sunburst', { composer: {}, navigation: {} });
+  check('choosing a model stores it directly', (await store.get('defaultModel')) === 'gpt-image-2.6-sunburst', String(await store.get('defaultModel')));
   check('no dialog interrupts a submenu pick', dialogs.length === 0, dialogs.join(','));
   const rows = await composerMenu.getMenu(scoped);
   check('the submenu marks what was just chosen', rows.find((item) => item.id === 'set-size').children.find((child) => child.current)?.id === 'size:1280x720');
@@ -732,7 +757,7 @@ panelSent = sent;
   // A default value is stored as "no override" so the built-in default can change.
   await composerMenu.execute(scoped, 'size:1024x1024', { composer: {}, navigation: {} });
   await composerMenu.execute(scoped, 'quality:low', { composer: {}, navigation: {} });
-  await composerMenu.execute(scoped, 'model:gpt-image-2.5-flare', { composer: {}, navigation: {} });
+  await composerMenu.execute(scoped, 'model:gpt-image-2.6-flare', { composer: {}, navigation: {} });
   check('choosing a built-in default clears the override', (await store.get('defaultSize')) === undefined && (await store.get('defaultQuality')) === undefined && (await store.get('defaultModel')) === undefined);
 
   // Garbage ids must not reach storage.

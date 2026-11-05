@@ -7,12 +7,13 @@ Generate and edit images with OpenAI's GPT Image models, right inside a Finch co
 - **Text-to-image** — describe what you want, get a picture.
 - **Image-to-image** — hand it one or more reference images plus a prompt, and it generates a new image guided by them (restyle a photo, remix a product shot, follow a reference's composition, etc.). The API takes up to 16 references per request; enough for a real composite, and anything beyond that is refused before the call.
 - **Masked edits** — add a mask image and only the masked area changes.
+- **Markup-guided edits** — hand over a transparent PNG of your marks over the reference image and the model follows the marks (Image 2.5 / 2.6). Masks and markup are alternatives, not a pair.
 - **Transparent cut-outs** — ask for a transparent background and get a PNG/WebP you can drop straight into a design.
 - **Any size you need** — square, portrait, landscape, 2K or 4K, or a custom `WIDTHxHEIGHT`.
 - **Quality you control** — from a cheap `low` draft up to `max` detail, so a quick idea doesn't cost what a final asset costs.
 - **Live previews** — for a slow, high-quality render it can stream low-resolution previews while it works, so you can bail early instead of waiting two minutes for a miss.
-- **Two models to pick from** — Sunburst when editing precision matters, Flare for fast everyday generation.
-- **Cheap by default** — unless you ask for better, it stays on Flare + `low` + `1024x1024`, the cheapest combination.
+- **Two variants per generation** — Sunburst when editing precision matters, Flare for fast everyday generation. It ships on **Image 2.6** (the current generation), and 2.5, 2 and 1.5 stay a click away.
+- **Cheap by default** — unless you ask for better, it stays on `gpt-image-2.6-flare` + `low` + `1024x1024`, the cheapest combination. Planning effort (`complexity`) is a separate, optional knob and stays unset unless you ask for it.
 - **Every image is kept** — a masonry gallery collects your generations, and you can send any of them straight back for another pass.
 - Every generated image is saved to a local file. Finch reports the file path back in the chat, so you can immediately ask to send it over WeChat, attach it to the composer, or open it.
 - **Custom / relay endpoint** — by default it talks to `https://api.openai.com/v1`, but you can point it at any OpenAI-compatible proxy or relay ("中转站") instead, either permanently or for a single request.
@@ -90,12 +91,13 @@ Click the **settings** (gear) menu on the image tool card in Toolcase → **API 
 - **文生图**：描述你想要的画面，直接生成图片。
 - **图生图**：提供一张或多张参考图加上提示词，模型会参考这些图生成新图（换风格、改背景、借鉴构图等）。接口一次最多接受 16 张参考图，超过会在发请求前直接拒绝。
 - **遮罩局部编辑**：再给一张遮罩图，就只改遮罩圈出来的区域。
+- **标注引导编辑**：把盖在参考图上的透明标注 PNG 交给模型，它就按标注改（Image 2.5 / 2.6）；遮罩和标注只能二选一。
 - **透明底抠图**：要透明背景就能直接拿到可放进设计稿的 PNG/WebP。
 - **尺寸自由**：方图、横版、竖版、2K、4K，或任意 `宽x高`。
 - **画质可调**：从便宜快速的 `low` 草稿到细节拉满的 `max`，随手一试不用花成品的钱。
 - **实时预览**：慢的高质量单图可以边生成边返回低分辨率预览，不满意能提前停，不用干等两分钟。
-- **两个模型可选**：Sunburst 擅长精修编辑，Flare 适合日常快速生成。
-- **默认最省**：不特意要求更好，就一直用 Flare + `low` + `1024x1024` 这个最便宜的组合。
+- **每一代都有两个变体**：Sunburst 擅长精修编辑，Flare 适合日常快速生成。默认跑在 **Image 2.6**（当前代），2.5、2、1.5 也一点就能切。
+- **默认最省**：不特意要求更好，就一直用 `gpt-image-2.6-flare` + `low` + `1024x1024` 这个最便宜的组合；`complexity`（规划强度）是单独的开关，没要求就不传。
 - **生成的图都留着**：瀑布流图片库会收好你的每一张图，随时挑一张发回去继续改。
 - 每张生成的图片都会保存为本地文件，Finch 会在对话中返回文件路径，之后可以直接要求通过微信发送、放进输入框附件，或打开查看。
 - **自定义/中转接口**：默认请求 `https://api.openai.com/v1`，也可以换成任意兼容 OpenAI 接口格式的代理/中转站，可以永久生效也可以只用一次。
