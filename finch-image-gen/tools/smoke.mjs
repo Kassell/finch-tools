@@ -19,7 +19,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { activate, checkSize, formatApiError, readImageSize, registerIcons, resolveModel, setTransport, resolveProxy } from '../dist/index.js';
+import { activate, checkSize, formatApiError, readImageSize, registerIcons, resolveModel, setTransport, resolveProxy, needsImage26, image26Sibling } from '../dist/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -1085,6 +1085,31 @@ panelSent = sent;
   // The saved extension is "jpg", which used to miss the jpeg branch entirely.
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x40, 0x00, 0x60, 0x03, 0, 0, 0, 0, 0, 0, 0]);
   check('readImageSize reads a JPEG by its saved extension', readImageSize(jpeg, 'jpg').width === 96 && readImageSize(jpeg, 'jpg').height === 64, JSON.stringify(readImageSize(jpeg, 'jpg')));
+}
+
+// 22 — gif and svg exist on Image 2.6 only, so an older model is moved up.
+{
+  check('2.5 is recognised as too old for gif', needsImage26('gpt-image-2.5-flare', 'gif') === true);
+  check('2.5 sunburst is too old for svg', needsImage26('gpt-image-2.5-sunburst', 'svg') === true);
+  check('a dated snapshot is too old as well', needsImage26('gpt-image-2-2026-04-21', 'gif') === true);
+  check('2.6 needs no upgrade', needsImage26('gpt-image-2.6-flare', 'gif') === false);
+  check('a png request never upgrades the model', needsImage26('gpt-image-2.5-flare', 'png') === false);
+  check('an unknown relay model is left alone', needsImage26('my-relay-image-x', 'gif') === false);
+  check('the sibling keeps the variant', image26Sibling('gpt-image-2.5-sunburst') === 'gpt-image-2.6-sunburst' && image26Sibling('gpt-image-2.5-flare') === 'gpt-image-2.6-flare');
+  check('a base family upgrades to flare', image26Sibling('gpt-image-2') === 'gpt-image-2.6-flare');
+
+  // End to end: a gif on a stored 2.5 default comes back from 2.6, and says so.
+  await store.set('defaultModel', 'gpt-image-2.5-flare');
+  const upgraded = await run({ ...base, output_format: 'gif' });
+  check('a gif request on the 2.5 default is sent to 2.6', upgraded.call.json.model === 'gpt-image-2.6-flare', upgraded.call.json.model);
+  check('the model change is explained, not silent', upgraded.text.includes('gpt-image-2.6-flare') && upgraded.text.split('\n').some((line) => line.startsWith('!')), upgraded.text);
+
+  const stillOnPng = await run({ ...base });
+  check('a png request keeps the configured 2.5', stillOnPng.call.json.model === 'gpt-image-2.5-flare', stillOnPng.call.json.model);
+
+  const relay = await run({ ...base, model: 'my-relay-image-x', output_format: 'gif' });
+  check('an unknown relay model is trusted with gif', relay.call.json.model === 'my-relay-image-x', relay.call.json.model);
+  await store.delete('defaultModel');
 }
 
 rmSync(storagePath, { recursive: true, force: true });

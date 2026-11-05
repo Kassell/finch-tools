@@ -74,6 +74,7 @@ Quality and size both drive cost and waiting time, so it's worth drafting low an
 
 - **GIF** animates your prompt over 2–16 frames and saves a real `.gif`. Ask for it in words ("做成 6 帧的 gif，每帧 130 毫秒") or pass `frame_count` / `frame_duration_ms`. GIF has no masks, no streaming previews and no compression level; it can still be an *edit* of a reference image.
 - **SVG** gives you a vector file, which is what you want when the result has to scale, be printed, or be edited as shapes later. It is generated from the prompt only — a reference image cannot be turned into an SVG — and always exactly one file. If your account has SVG model selection, `svg_model` picks the author model and `svg_effort` its reasoning effort; otherwise leave both out.
+- Both are **Image 2.6** capabilities. If the saved default is 2.5 or earlier, the tool moves that request to the 2.6 sibling (Flare stays Flare, Sunburst stays Sunburst) and says so in the result instead of failing at the endpoint.
 - Both show up in the gallery like any other image: the card keeps its aspect ratio, and the editor opens them for annotation.
 - Reference images, masks and markup stay **png / jpeg / webp** — a generated gif or svg cannot be fed back in as an input.
 
@@ -174,6 +175,7 @@ When something does fail, the error message is specific rather than a bare `fetc
 
 - **GIF** 会把提示词变成 2–16 帧动画，落地是真正的 `.gif` 文件。可以直接说「做成 6 帧的 gif，每帧 130 毫秒」，也可以传 `frame_count` / `frame_duration_ms`。GIF 不支持遮罩、预览流和压缩级别；但它可以作为**改图**的产物（参考图 → gif）。
 - **SVG** 出的是矢量文件，适合要放大、要印刷、或者之后还要按图形继续编辑的场景。它只能从提示词生成——参考图不能改写成 SVG——而且永远只出一张。账号开通了 SVG 模型选择时，用 `svg_model` 指定作者模型、`svg_effort` 指定它的推理强度；没开通就都别传。
+- 两者都是 **Image 2.6** 的能力。如果存的默认模型还是 2.5 或更早，工具会把这一次请求切到对应的 2.6 变体（Flare 对 Flare、Sunburst 对 Sunburst），并在结果里说明，而不是让接口报错。
 - 两者在图片库里和普通图片一样：卡片保持自己的宽高比，编辑器也能直接打开标注。
 - 参考图、遮罩和标注图仍然只能是 **png / jpeg / webp**——生成出来的 gif、svg 不能再当作输入图。
 

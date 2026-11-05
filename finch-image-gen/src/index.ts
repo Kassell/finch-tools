@@ -97,6 +97,24 @@ export function resolveModel(raw: unknown, fallback: string = DEFAULT_MODEL): st
   return MODEL_ALIASES[value] ?? value;
 }
 
+/**
+ * GIF and SVG are Image 2.6 capabilities: the docs gate them on "access to the
+ * GIF preview / SVG model selection" for the chosen model. Asking 2.5 (or older)
+ * for one is a guaranteed 400, so a known older GPT Image family is moved to its
+ * 2.6 sibling and the caller is told. IDs we do not recognise are left alone —
+ * a relay's own model name may well implement these formats.
+ */
+const OLDER_IMAGE_FAMILY = /^gpt-image-(1|1\.5|2|2\.5)(-(flare|sunburst))?(-\d{4}-\d{2}-\d{2})?$/;
+
+export function needsImage26(model: string, format: string): boolean {
+  if (format !== 'gif' && format !== 'svg') return false;
+  return OLDER_IMAGE_FAMILY.test(model.trim().toLowerCase());
+}
+
+export function image26Sibling(model: string): string {
+  return /sunburst/i.test(model) ? 'gpt-image-2.6-sunburst' : 'gpt-image-2.6-flare';
+}
+
 // ── size ─────────────────────────────────────────────────────────────────────
 
 /** Sizes the docs call out as popular; any other valid WxH is accepted too. */
@@ -1534,7 +1552,7 @@ export function activate(ctx: finch.MiniToolContext): void {
         }
 
         const storedModel = await ctx.storage.get<string>(MODEL_STORAGE_KEY);
-        const model = resolveModel(input.model, storedModel && storedModel.trim() ? storedModel.trim() : DEFAULT_MODEL);
+        let model = resolveModel(input.model, storedModel && storedModel.trim() ? storedModel.trim() : DEFAULT_MODEL);
         const storedQuality = await ctx.storage.get<string>(QUALITY_STORAGE_KEY);
         const quality = pickEnum(
           input.quality,
@@ -1628,6 +1646,13 @@ export function activate(ctx: finch.MiniToolContext): void {
         if (format === 'gif' || format === 'svg') {
           if (partialImages > 0) warnings.push(t('warn.streamUnsupported', { format }));
           if (input.output_compression !== undefined) warnings.push(t('warn.compressionDropped', { format }));
+          // These two formats only exist on Image 2.6; sending them to an older
+          // family fails at the endpoint, so move to the sibling model instead.
+          if (needsImage26(model, format)) {
+            const upgraded = image26Sibling(model);
+            warnings.push(t('warn.formatNeeds26', { format, from: model, to: upgraded }));
+            model = upgraded;
+          }
         }
         // Only forward values the API documents: an unknown complexity is dropped
         // rather than sent as a guess.
