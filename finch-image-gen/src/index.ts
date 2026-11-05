@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Agent, FormData as HttpFormData, ProxyAgent, fetch as undiciFetch } from 'undici';
 import { parseAnnotations, type GalleryAnnotations } from './gallery-model';
 
 /**
@@ -14,7 +15,7 @@ import { parseAnnotations, type GalleryAnnotations } from './gallery-model';
 const ICON_PACK_ID = 'image-gen-icons';
 const ICON_FILES = [
   'book-image', 'image', 'cpu-ai', 'paintbrush', 'image-upscale', 'settings', 'key-round', 'link',
-  'square', 'rectangle-vertical', 'rectangle-horizontal',
+  'square', 'rectangle-vertical', 'rectangle-horizontal', 'globe', 'plug-zap',
 ] as const;
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -30,6 +31,7 @@ const DEFAULT_SIZE = '1024x1024';
 
 const BASE_URL_STORAGE_KEY = 'baseUrl';
 const API_KEY_STORAGE_KEY = 'openaiApiKey';
+const PROXY_STORAGE_KEY = 'proxyUrl';
 const MODEL_STORAGE_KEY = 'defaultModel';
 const QUALITY_STORAGE_KEY = 'defaultQuality';
 const SIZE_STORAGE_KEY = 'defaultSize';
@@ -225,6 +227,147 @@ function isValidHttpUrl(url: string): boolean {
   }
 }
 
+// ── transport ────────────────────────────────────────────────────────────────
+
+/**
+ * Every request goes through this one function. It exists because the host's
+ * global `fetch` has no proxy support: a user behind Clash/V2Ray gets a bare
+ * `fetch failed` while the same request works in a terminal, and there is no
+ * way to hand the host's fetch a dispatcher (a foreign ProxyAgent is rejected
+ * with UND_ERR_INVALID_ARG). Bundling undici gives us that dispatcher, so the
+ * proxy is ours to configure.
+ */
+type Transport = (url: string, init: Parameters<typeof undiciFetch>[1]) => ReturnType<typeof undiciFetch>;
+type HttpResponse = Awaited<ReturnType<Transport>>;
+
+const defaultTransport: Transport = (url, init) => undiciFetch(url, init);
+let transport: Transport = defaultTransport;
+
+/** Test hook: the smoke suite routes every request through its own stub. */
+export function setTransport(next: Transport | null): void {
+  transport = next ?? defaultTransport;
+}
+
+/** The saved proxy wins; otherwise follow the environment the host was started with. */
+export function resolveProxy(stored: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
+  const saved = stored?.trim();
+  if (saved) return normalizeProxy(saved);
+  const fromEnv = (env.HTTPS_PROXY ?? env.https_proxy ?? env.ALL_PROXY ?? env.all_proxy ?? env.HTTP_PROXY ?? env.http_proxy ?? '').trim();
+  return fromEnv ? normalizeProxy(fromEnv) : '';
+}
+
+function normalizeProxy(raw: string): string {
+  const value = raw.trim();
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`;
+}
+
+/** Diagnostics are shown to the user and written to logs: never leak credentials. */
+function maskProxy(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      parsed.username = '***';
+      parsed.password = '';
+    }
+    return parsed.toString();
+  } catch {
+    return '(invalid proxy URL)';
+  }
+}
+
+const dispatchers = new Map<string, Agent | ProxyAgent>();
+function dispatcherFor(proxy: string): Agent | ProxyAgent {
+  const key = proxy || 'direct';
+  const cached = dispatchers.get(key);
+  if (cached) return cached;
+  // A dead proxy should fail as a timeout, not hang until the tool deadline.
+  const created = proxy
+    ? new ProxyAgent({ uri: proxy, connect: { timeout: 15_000 } })
+    : new Agent({ connect: { timeout: 15_000 } });
+  dispatchers.set(key, created);
+  return created;
+}
+
+/** Which step a request died in — the difference between "proxy" and "the model". */
+type Stage = 'connect' | 'read-response' | 'parse-json' | 'download-image' | 'save-file';
+
+/** A failure that still knows what was being attempted when it happened. */
+class RequestFailure extends Error {
+  constructor(
+    readonly stage: Stage,
+    readonly detail: unknown,
+    readonly elapsedMs: number,
+    readonly proxy: string,
+  ) {
+    super(detail instanceof Error ? detail.message : String(detail));
+    this.name = 'RequestFailure';
+  }
+}
+
+/** Every `code`/`syscall`/`host` on the way down the cause chain, in order. */
+function causeChain(error: unknown, depth = 0): string[] {
+  if (!error || depth > 3) return [];
+  const err = error as { name?: string; message?: string; code?: string; errno?: number; syscall?: string; hostname?: string; cause?: unknown };
+  const parts = [
+    err.name && err.name !== 'Error' ? err.name : '',
+    err.message ?? String(error),
+    err.code ? `code=${err.code}` : '',
+    err.errno !== undefined && !err.code ? `errno=${err.errno}` : '',
+    err.syscall ? `syscall=${err.syscall}` : '',
+    err.hostname ? `host=${err.hostname}` : '',
+  ].filter(Boolean);
+  return [parts.join(' '), ...causeChain(err.cause, depth + 1)];
+}
+
+/**
+ * Turn a failed request into something a person (or the agent) can act on.
+ * `fetch failed` alone is the bug this replaces: the reason lives in `cause`.
+ */
+export function describeFailure(
+  failure: RequestFailure,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string {
+  const chain = causeChain(failure.detail);
+  const haystack = chain.join(' ');
+  const proxyLine = failure.proxy ? t('diag.proxy', { proxy: maskProxy(failure.proxy) }) : t('diag.direct');
+
+  let hint = '';
+  if (haystack.includes('ENOTFOUND') || haystack.includes('EAI_AGAIN')) hint = t('diag.hint.dns');
+  else if (haystack.includes('ECONNREFUSED')) hint = t('diag.hint.refused');
+  else if (haystack.includes('ECONNRESET') || haystack.includes('EPIPE')) hint = t('diag.hint.reset');
+  else if (haystack.includes('UND_ERR_CONNECT_TIMEOUT') || haystack.includes('ETIMEDOUT')) hint = t('diag.hint.timeout');
+  else if (haystack.includes('CERT_') || haystack.includes('SELF_SIGNED_CERT') || haystack.includes('UNABLE_TO_VERIFY_LEAF_SIGNATURE')) {
+    hint = t('diag.hint.tls');
+  } else if (haystack.includes('UND_ERR_INVALID_ARG')) hint = t('diag.hint.invalidProxy');
+
+  // A direct request that cannot connect while the host was started with proxy
+  // variables is the signature of the reported Windows bug.
+  const envProxy = resolveProxy(undefined);
+  if (!hint && !failure.proxy && envProxy) hint = t('diag.hint.envProxy', { proxy: maskProxy(envProxy) });
+  if (!hint && !failure.proxy) hint = t('diag.hint.noProxy');
+
+  const lines = [
+    t('diag.title', { stage: failure.stage, ms: String(failure.elapsedMs) }),
+    proxyLine,
+    ...(chain.length ? [t('diag.chain', { chain: chain.join(' ← ') })] : []),
+    ...(hint ? [hint] : []),
+  ];
+  return lines.join('\n');
+}
+
+/** Uniform "everything that touches the network" plumbing. */
+function failure(stage: Stage, error: unknown, startedAt: number, proxy: string): RequestFailure {
+  return new RequestFailure(stage, error, Date.now() - startedAt, proxy);
+}
+
+async function readJsonBody<T>(response: HttpResponse, startedAt: number, proxy: string): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    throw failure('parse-json', error, startedAt, proxy);
+  }
+}
+
 // ── errors ───────────────────────────────────────────────────────────────────
 
 interface ApiErrorBody {
@@ -282,12 +425,15 @@ export function formatApiError(error: ApiErrorBody | undefined, statusLine: stri
   return hint ? `${parts.join(' ')}\n${hint}` : parts.join(' ');
 }
 
-async function readErrorMessage(response: Response): Promise<string> {
+async function readErrorMessage(response: HttpResponse, startedAt?: number, proxy = ''): Promise<string> {
   try {
     const body = (await response.json()) as { error?: ApiErrorBody };
     return formatApiError(body?.error, `${response.status} ${response.statusText}`);
-  } catch {
-    return `${response.status} ${response.statusText}`;
+  } catch (error) {
+    // An error response we cannot read is still an HTTP error; only blame the
+    // body when there was no status at all.
+    if (startedAt === undefined) return `${response.status} ${response.statusText}`;
+    return `${response.status} ${response.statusText} (unreadable error body: ${causeChain(error).join(' ← ') || 'empty'})`;
   }
 }
 
@@ -311,24 +457,33 @@ function authHeaders(apiKey: string): Record<string, string> {
 async function callGenerate(
   baseUrl: string,
   apiKey: string,
+  proxy: string,
   body: Record<string, unknown>,
   signal: AbortSignal | undefined,
   started: () => void,
 ): Promise<OpenAiImageResponse> {
   started();
-  const response = await fetch(`${baseUrl}/images/generations`, {
-    method: 'POST',
-    headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!response.ok) throw new Error(await readErrorMessage(response));
-  return (await response.json()) as OpenAiImageResponse;
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/images/generations`, {
+      method: 'POST',
+      headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    throw failure('connect', error, startedAt, proxy);
+  }
+  if (!response.ok) throw new Error(await readErrorMessage(response, startedAt, proxy));
+  return readJsonBody<OpenAiImageResponse>(response, startedAt, proxy);
 }
 
 async function callEdit(
   baseUrl: string,
   apiKey: string,
+  proxy: string,
   fields: Record<string, string>,
   referenceImagePaths: string[],
   maskPath: string | undefined,
@@ -336,33 +491,44 @@ async function callEdit(
   signal: AbortSignal | undefined,
   started: () => void,
 ): Promise<OpenAiImageResponse> {
-  const form = new FormData();
+  // The bundled undici has its own FormData, and the host's global FormData is a
+  // different copy: handed to undici's fetch it would be sent as plain text.
+  // Global File/Blob are accepted by undici's FormData, so only the container
+  // has to come from our copy.
+  const form = new HttpFormData();
   for (const [key, value] of Object.entries(fields)) form.append(key, value);
   for (const refPath of referenceImagePaths) {
     const buf = await fs.readFile(refPath);
-    form.append('image[]', new Blob([buf], { type: mimeForPath(refPath) }), path.basename(refPath));
+    form.append('image[]', new File([buf], path.basename(refPath), { type: mimeForPath(refPath) }));
   }
   if (maskPath) {
     const buf = await fs.readFile(maskPath);
-    form.append('mask', new Blob([buf], { type: mimeForPath(maskPath) }), path.basename(maskPath));
+    form.append('mask', new File([buf], path.basename(maskPath), { type: mimeForPath(maskPath) }));
   }
   if (markupPath) {
     // A transparent PNG laid over the first image: the marks guide the edit
     // without being part of the picture the model starts from.
     const buf = await fs.readFile(markupPath);
-    form.append('markup', new Blob([buf], { type: mimeForPath(markupPath) }), path.basename(markupPath));
+    form.append('markup', new File([buf], path.basename(markupPath), { type: mimeForPath(markupPath) }));
   }
   // Announced here, not at the top: reading (and about to upload) the
   // reference images is preparation, not generation.
   started();
-  const response = await fetch(`${baseUrl}/images/edits`, {
-    method: 'POST',
-    headers: authHeaders(apiKey),
-    body: form,
-    signal,
-  });
-  if (!response.ok) throw new Error(await readErrorMessage(response));
-  return (await response.json()) as OpenAiImageResponse;
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/images/edits`, {
+      method: 'POST',
+      headers: authHeaders(apiKey),
+      body: form,
+      signal,
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    throw failure('connect', error, startedAt, proxy);
+  }
+  if (!response.ok) throw new Error(await readErrorMessage(response, startedAt, proxy));
+  return readJsonBody<OpenAiImageResponse>(response, startedAt, proxy);
 }
 
 /**
@@ -375,19 +541,27 @@ async function callEdit(
 async function callGenerateStreaming(
   baseUrl: string,
   apiKey: string,
+  proxy: string,
   body: Record<string, unknown>,
   signal: AbortSignal | undefined,
   onPartial: (index: number, buf: Buffer) => void,
   started: () => void,
 ): Promise<OpenAiImageResponse> {
   started();
-  const response = await fetch(`${baseUrl}/images/generations`, {
-    method: 'POST',
-    headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ ...body, stream: true }),
-    signal,
-  });
-  if (!response.ok) throw new Error(await readErrorMessage(response));
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/images/generations`, {
+      method: 'POST',
+      headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ ...body, stream: true }),
+      signal,
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    throw failure('connect', error, startedAt, proxy);
+  }
+  if (!response.ok) throw new Error(await readErrorMessage(response, startedAt, proxy));
   if (!response.body) throw new Error('The endpoint did not return a streaming body.');
 
   const reader = response.body.getReader();
@@ -454,6 +628,7 @@ async function saveImages(
   outDir: string,
   namePrefix: string,
   extension: string,
+  proxy: string,
 ): Promise<SavedImage[]> {
   await fs.mkdir(outDir, { recursive: true });
   const saved: SavedImage[] = [];
@@ -464,14 +639,31 @@ async function saveImages(
     if (item.b64_json) {
       buf = Buffer.from(item.b64_json, 'base64');
     } else if (item.url) {
-      const res = await fetch(item.url);
+      // Some endpoints return a URL instead of inline bytes; that download needs
+      // the same proxy and gets its own stage, so a CDN block is not mistaken
+      // for a generation failure.
+      const startedAt = Date.now();
+      let res: HttpResponse;
+      try {
+        res = await transport(item.url, { dispatcher: dispatcherFor(proxy) } as Parameters<Transport>[1]);
+      } catch (error) {
+        throw failure('download-image', error, startedAt, proxy);
+      }
       if (!res.ok) throw new Error(`Failed to download generated image: ${res.status} ${res.statusText}`);
-      buf = Buffer.from(await res.arrayBuffer());
+      try {
+        buf = Buffer.from(await res.arrayBuffer());
+      } catch (error) {
+        throw failure('download-image', error, startedAt, proxy);
+      }
     } else {
       continue;
     }
     const filePath = path.join(outDir, `${namePrefix}-${stamp}-${i + 1}.${extension}`);
-    await fs.writeFile(filePath, buf);
+    try {
+      await fs.writeFile(filePath, buf);
+    } catch (error) {
+      throw failure('save-file', error, Date.now(), proxy);
+    }
     const { width, height } = readImageSize(buf, extension);
     saved.push({ filePath, width, height, bytes: buf.length });
   }
@@ -491,6 +683,55 @@ async function saveImages(
  * (with the requested pixel size as a badge), the one component that says "a
  * picture is being drawn" rather than "some tool is working".
  */
+// ── connection probe ─────────────────────────────────────────────────────────
+
+interface ProbeResult {
+  /** One line for the settings row. */
+  summary: string;
+  /** Full explanation for the dialog. */
+  detail: string;
+}
+
+/**
+ * Prove the transport works without spending money: `GET /models` exercises DNS,
+ * proxy, TLS and the key, and costs no image generation. A 401 here is the good
+ * news case — the request arrived and only the key was rejected.
+ */
+async function probeConnection(ctx: finch.MiniToolContext, t: (key: string, values?: Record<string, string | number>) => string): Promise<ProbeResult> {
+  const storedBaseUrl = await ctx.storage.get<string>(BASE_URL_STORAGE_KEY);
+  const baseUrl = storedBaseUrl && storedBaseUrl.trim() ? normalizeBaseUrl(storedBaseUrl) : DEFAULT_BASE_URL;
+  const apiKey = (await ctx.secrets.get('OPENAI_API_KEY')) || (await ctx.storage.get<string>(API_KEY_STORAGE_KEY));
+  if (!apiKey) {
+    return { summary: t('probe.noKey'), detail: t('probe.noKey.detail') };
+  }
+  const proxy = resolveProxy(await ctx.storage.get<string>(PROXY_STORAGE_KEY));
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/models`, {
+      method: 'GET',
+      headers: authHeaders(apiKey),
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    const described = describeFailure(failure('connect', error, startedAt, proxy), t);
+    return { summary: t('probe.failed'), detail: `${t('probe.failed.detail')}\n\n${described}` };
+  }
+  const ms = Date.now() - startedAt;
+  if (response.ok) {
+    return { summary: t('probe.ok', { ms }), detail: t('probe.ok.detail', { baseUrl, ms }) };
+  }
+  if (response.status === 401 || response.status === 403) {
+    // The transport is fine; the credentials are the problem.
+    return {
+      summary: t('probe.auth', { status: response.status }),
+      detail: t('probe.auth.detail', { status: response.status, baseUrl }),
+    };
+  }
+  const message = await readErrorMessage(response, startedAt, proxy);
+  return { summary: t('probe.http', { status: response.status }), detail: t('probe.http.detail', { message, ms }) };
+}
+
 async function withHeartbeat<T>(
   work: (started: () => void) => Promise<T>,
   progress: finch.ToolProgress,
@@ -1185,7 +1426,7 @@ export function activate(ctx: finch.MiniToolContext): void {
           },
           base_url: {
             type: 'string',
-            description: `One-off override of the API base URL for this call only (e.g. a proxy/relay endpoint), without changing the saved default. Must include the protocol, e.g. "https://your-proxy.example.com/v1". Omit to use the endpoint configured via the Composer's Image Gen settings button (default "${DEFAULT_BASE_URL}").`,
+            description: `One-off override of the API base URL for this call only (e.g. a relay or mirror endpoint), without changing the saved default. Must include the protocol, e.g. "https://relay.example.com/v1". This is the API endpoint, not a network proxy — proxy settings live in the settings menu. Omit to use the saved default.`,
           },
           safety_identifier: {
             type: 'string',
@@ -1298,6 +1539,10 @@ export function activate(ctx: finch.MiniToolContext): void {
           if (configured && configured.trim()) baseUrl = normalizeBaseUrl(configured);
         }
 
+        // Proxy: the saved value wins, otherwise the environment the host was
+        // started with. A user behind Clash/V2Ray cannot reach OpenAI directly.
+        const proxy = resolveProxy(await ctx.storage.get<string>(PROXY_STORAGE_KEY));
+
         // Only forward optional knobs the caller actually asked for: relays and
         // older models reject parameters they do not implement.
         const optional: Record<string, unknown> = {};
@@ -1326,6 +1571,7 @@ export function activate(ctx: finch.MiniToolContext): void {
                 ? callEdit(
                     baseUrl,
                     apiKey,
+                    proxy,
                     { model, prompt, size, quality, n: String(n), ...optional },
                     refPaths,
                     maskPath,
@@ -1337,6 +1583,7 @@ export function activate(ctx: finch.MiniToolContext): void {
                   ? callGenerateStreaming(
                       baseUrl,
                       apiKey,
+                      proxy,
                       { model, prompt, size, quality, n, partial_images: partialImages, ...optional },
                       exec.signal,
                       async (index, buf) => {
@@ -1352,7 +1599,7 @@ export function activate(ctx: finch.MiniToolContext): void {
                       },
                       started,
                     )
-                  : callGenerate(baseUrl, apiKey, { model, prompt, size, quality, n, ...optional }, exec.signal, started),
+                  : callGenerate(baseUrl, apiKey, proxy, { model, prompt, size, quality, n, ...optional }, exec.signal, started),
             exec.progress,
             stage,
             baseMessage,
@@ -1365,7 +1612,7 @@ export function activate(ctx: finch.MiniToolContext): void {
           }
 
           exec.progress.report({ stage: 'saving', message: t('progress.saving') });
-          const saved = await saveImages(items, outDir, namePrefix, EXT_BY_FORMAT[format]);
+          const saved = await saveImages(items, outDir, namePrefix, EXT_BY_FORMAT[format], proxy);
           const savedPaths = saved.map((item) => item.filePath);
           if (stream) await fs.rm(previewDir, { recursive: true, force: true });
 
@@ -1416,8 +1663,10 @@ export function activate(ctx: finch.MiniToolContext): void {
           ];
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          ctx.logger.error(`image_gen_create failed: ${message}`);
+          // Keep the whole story: a bare "fetch failed" told nobody whether it
+          // was DNS, a proxy, TLS or a timeout.
+          const message = err instanceof RequestFailure ? describeFailure(err, t) : err instanceof Error ? err.message : String(err);
+          ctx.logger.error(`image_gen_create failed: ${message.replace(/\n/g, ' | ')}`);
           return { content: [{ type: 'text', text: `${t('error.failed')}\n${message}` }], isError: true };
         }
       },
@@ -1512,6 +1761,10 @@ export function activate(ctx: finch.MiniToolContext): void {
 
   // The endpoint is setup, not a knob you flip between generations, so the key
   // and the base URL live in the Toolcase / container settings menu.
+  // Shown on the settings row until the next probe, so the last result is still
+  // visible after the dialog is dismissed.
+  let lastProbe: string | undefined;
+
   ctx.subscriptions.push(
     ctx.settingsMenu.register({
       async getMenu() {
@@ -1520,6 +1773,13 @@ export function activate(ctx: finch.MiniToolContext): void {
         const hasKeychainKey = !!(await ctx.secrets.get('OPENAI_API_KEY'));
         const hasStoredKey = !!(await ctx.storage.get<string>(API_KEY_STORAGE_KEY));
         const keyStatus = hasKeychainKey || hasStoredKey ? t('status.configured') : t('status.notSet');
+        const storedProxy = (await ctx.storage.get<string>(PROXY_STORAGE_KEY))?.trim() ?? '';
+        const effectiveProxy = resolveProxy(storedProxy);
+        const proxyDescription = !effectiveProxy
+          ? t('proxy.direct')
+          : storedProxy
+            ? maskProxy(effectiveProxy)
+            : t('proxy.fromEnv', { proxy: maskProxy(effectiveProxy) });
         return [
           {
             id: 'set-api-key',
@@ -1532,6 +1792,18 @@ export function activate(ctx: finch.MiniToolContext): void {
             label: t('menu.baseUrl'),
             iconName: 'ext:image-gen-icons/link',
             description: effectiveBaseUrl,
+          },
+          {
+            id: 'set-proxy',
+            label: t('menu.proxy'),
+            iconName: 'ext:image-gen-icons/globe',
+            description: proxyDescription || t('proxy.direct'),
+          },
+          {
+            id: 'test-connection',
+            label: t('menu.test'),
+            iconName: 'ext:image-gen-icons/plug-zap',
+            description: lastProbe ?? t('menu.test.desc'),
           },
         ];
       },
@@ -1598,6 +1870,60 @@ export function activate(ctx: finch.MiniToolContext): void {
             return;
           }
           await ctx.storage.set(BASE_URL_STORAGE_KEY, normalizeBaseUrl(value));
+          return;
+        }
+
+        if (itemId === 'set-proxy') {
+          const stored = await ctx.storage.get<string>(PROXY_STORAGE_KEY);
+          const envProxy = resolveProxy(undefined);
+          const result = await ctx.ui.showModalDialog({
+            title: t('menu.proxy'),
+            description: t('dialog.proxy.desc', { env: envProxy ? maskProxy(envProxy) : t('proxy.none') }),
+            fields: [
+              {
+                key: 'proxy',
+                label: t('menu.proxy'),
+                type: 'text',
+                placeholder: 'http://127.0.0.1:7890',
+                default: stored ?? '',
+              },
+            ],
+            actions: [
+              { id: 'cancel', label: t('dialog.cancel') },
+              { id: 'save', label: t('dialog.save'), variant: 'primary' },
+            ],
+          });
+          if (result.action !== 'save') return;
+          const value = String(result.values?.proxy ?? '').trim();
+          if (!value) {
+            // Empty means "follow the environment", which is what most proxy
+            // clients export anyway.
+            await ctx.storage.delete(PROXY_STORAGE_KEY);
+            return;
+          }
+          if (!isValidHttpUrl(normalizeProxy(value))) {
+            await ctx.ui.showModalDialog({
+              title: t('dialog.invalidUrl.title'),
+              message: t('dialog.invalidUrl.message', { value }),
+              actions: [{ id: 'ok', label: t('dialog.ok'), variant: 'primary' }],
+            });
+            return;
+          }
+          await ctx.storage.set(PROXY_STORAGE_KEY, normalizeProxy(value));
+          return;
+        }
+
+        if (itemId === 'test-connection') {
+          // A real request that costs nothing: listing models proves DNS, proxy,
+          // TLS and the key without rendering an image.
+          const outcome = await probeConnection(ctx, t);
+          lastProbe = outcome.summary;
+          await ctx.ui.showModalDialog({
+            title: t('menu.test'),
+            message: outcome.detail,
+            actions: [{ id: 'ok', label: t('dialog.ok'), variant: 'primary' }],
+          });
+          return;
         }
       },
     }),

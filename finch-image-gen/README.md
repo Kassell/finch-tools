@@ -41,7 +41,7 @@ Editing needs a Composer to write into, so the editor opens from a session panel
 ## Setup
 
 1. Install and enable this mini tool in Finch's Toolcase.
-2. On the image tool card in Toolcase, click its **settings** (gear) menu → **OpenAI API Key**, paste your key, and save. The same menu has **API Base URL** if you want an OpenAI-compatible proxy or relay instead of the official `https://api.openai.com/v1` — leave it empty to use the default.
+2. On the image tool card in Toolcase, click its **settings** (gear) menu → **OpenAI API Key**, paste your key, and save. The same menu has **API Base URL** if you want an OpenAI-compatible relay instead of the official `https://api.openai.com/v1` — leave it empty to use the default.
 3. (Optional) In any Composer, the **Image Tool** toolbar button holds the everyday generation defaults — **Default model**, **Default quality** and **Default size** — as hover submenus, so a change is one click and never a dialog. The size list is by aspect ratio (square 1:1, portrait 3:4, story 9:16, landscape 4:3, wide 16:9, or let the model decide). Those are only fallbacks — asking in chat still overrides them for a single request.
 4. That's it. Just ask Finch to generate an image.
 
@@ -68,9 +68,25 @@ Editing needs a Composer to write into, so the editor opens from a session panel
 
 Quality and size both drive cost and waiting time, so it's worth drafting low and only raising both for the version you keep.
 
-## Using a proxy / relay endpoint
+## Using a relay endpoint
 
 Click the **settings** (gear) menu on the image tool card in Toolcase → **API Base URL**, type the endpoint, and save. It applies to every future generation until you change it again (leave the field empty and save to go back to the official endpoint). For a one-off different endpoint on a single request, you can also just ask in chat, e.g. "这次用 https://my-relay.example.com/v1 生成" — that overrides only that call without touching the saved setting.
+
+## Behind a proxy (Clash, V2Ray, corporate proxy)
+
+If your machine only reaches the internet through a local proxy, set it once: **settings** (gear) menu → **Network Proxy**, e.g. `http://127.0.0.1:7890`. The address may omit `http://`; a username and password are supported and are masked wherever they appear. Leave the field empty and the tool follows `HTTPS_PROXY` / `ALL_PROXY` from the environment, and with neither set it connects directly.
+
+### Test Connection
+
+The same menu has **Test Connection**: it calls the endpoint's model list — no image, no cost — and tells you what it proved:
+
+| Result | Meaning |
+| --- | --- |
+| Connected in N ms | Proxy, DNS, TLS and the API key all work |
+| Reached the API, key rejected (401) | The network is fine; the key (or organization verification) is the problem |
+| Connection failed | The dialog names the failing step, the proxy used, and the underlying cause |
+
+When something does fail, the error message is specific rather than a bare `fetch failed`: it names the stage (connecting, uploading, reading the response, downloading the image, saving the file), how long it took, which proxy was in use, and the cause chain — for example `connect ECONNREFUSED 127.0.0.1:7890` — followed by a hint for that exact case (proxy not running, DNS, connection reset, timeout, TLS interception).
 
 ## Notes
 
@@ -125,7 +141,7 @@ Click the **settings** (gear) menu on the image tool card in Toolcase → **API 
 ## 使用前配置
 
 1. 在 Finch 工具箱（Toolcase）中安装并启用本小工具。
-2. 在工具箱里的生图工具卡片上点它的**设置**（齿轮）菜单 → **OpenAI API Key**，粘贴你的 Key 并保存。同一个菜单里还有 **API Base URL**——想用兼容 OpenAI 接口格式的代理/中转站代替官方地址 `https://api.openai.com/v1` 就填这里；留空即用官方默认地址。
+2. 在工具箱里的生图工具卡片上点它的**设置**（齿轮）菜单 → **OpenAI API Key**，粘贴你的 Key 并保存。同一个菜单里还有 **API Base URL**——想用兼容 OpenAI 接口格式的中转站代替官方地址 `https://api.openai.com/v1` 就填这里；留空即用官方默认地址。
 3. （可选）任意对话的输入框工具栏里的 **生图工具** 按钮，管的是日常生图默认参数：**默认模型**、**默认画质**、**默认尺寸**——都是悬停展开的二级菜单，选一下就生效，不再弹窗。尺寸按画幅列：正方形 1:1、竖向 3:4、故事版式 9:16、横向 4:3、宽屏 16:9，也可以交给模型决定。它们只是兜底值——在聊天里直接说仍然会覆盖本次请求。
 4. 之后直接让 Finch 帮你生成图片即可。
 
@@ -152,9 +168,25 @@ Click the **settings** (gear) menu on the image tool card in Toolcase → **API 
 - "帮我把这张产品图换个背景"（附上参考图后再说）
 - "给我生成 4 张正方形的友好机器人吉祥物图标"
 
-## 使用中转站/代理接口
+## 使用中转站接口
 
 点击工具箱里生图工具卡片上的**设置**（齿轮）菜单 → **API Base URL**，填入地址后保存即可——修改后对之后每次生成都生效，直到你再次修改（清空后保存即恢复官方地址）。如果只想某一次请求临时换个地址，也可以直接在聊天里说，例如 "这次用 https://my-relay.example.com/v1 生成"，这只影响这一次调用，不会改动已保存的设置。
+
+## 走网络代理（Clash、V2Ray、公司代理）
+
+如果这台机器要经本地代理才能上网，设置一次即可：**设置**（齿轮）菜单 → **网络代理**，例如 `http://127.0.0.1:7890`。地址可以省略 `http://`；支持带用户名密码，任何地方展示时都会被隐去。留空则跟随环境变量 `HTTPS_PROXY` / `ALL_PROXY`，两者都没有就直连。
+
+### 测试连接
+
+同一个菜单里有**测试连接**：它只请求接口的模型列表，不生成图片、不产生费用，并告诉你验证到了哪一步：
+
+| 结果 | 含义 |
+| --- | --- |
+| 连接正常，N ms | 代理、DNS、TLS 和密钥都正常 |
+| 已连上接口，密钥被拒（401） | 网络没问题，问题在密钥（或组织验证） |
+| 连接失败 | 弹窗会说明卡在哪一步、用的哪个代理、以及根本原因 |
+
+出错时不再是笼统的 `fetch failed`，而是会写明阶段（建连、上传、读取响应、下载图片、保存文件）、耗时、当时用的代理，以及原因链——例如 `connect ECONNREFUSED 127.0.0.1:7890`——再跟一条针对这种情况的提示（代理没启动、DNS、连接被重置、超时、TLS 被拦截）。
 
 ## 说明
 

@@ -1,8 +1,8 @@
 /**
  * Host-free smoke test for finch-image-gen.
  *
- * `activate()` only needs `ctx`, and every request goes through global `fetch`,
- * so a fake host plus a stubbed fetch can drive the real `image_gen_create`
+ * `activate()` only needs `ctx`, and every request goes through the pack's own
+ * transport, so a fake host plus a stubbed transport can drive the real `image_gen_create`
  * `execute()` and assert the parts that are painful to check by hand:
  *
  *   1. which parameters actually reach the API (and which stay omitted so relays
@@ -19,7 +19,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { activate, checkSize, formatApiError, readImageSize, registerIcons, resolveModel } from '../dist/index.js';
+import { activate, checkSize, formatApiError, readImageSize, registerIcons, resolveModel, setTransport, resolveProxy } from '../dist/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -183,6 +183,13 @@ function jsonReply(body, init = {}) {
   };
 }
 
+/**
+ * The host's global fetch is not used any more (it cannot take a proxy
+ * dispatcher), so the suite drives the pack's exported transport hook instead.
+ * `nextThrows` simulates a request that dies before any response arrives.
+ */
+let nextThrows = null;
+
 function sseReply(chunks) {
   const encoder = new TextEncoder();
   let index = 0;
@@ -203,8 +210,9 @@ function sseReply(chunks) {
   };
 }
 
-globalThis.fetch = async (url, init) => {
+setTransport(async (url, init) => {
   const record = { url: String(url), init: init ?? {} };
+  record.dispatcher = init?.dispatcher;
   if (record.init.body && typeof record.init.body === 'string') {
     record.json = JSON.parse(record.init.body);
   }
@@ -218,8 +226,13 @@ globalThis.fetch = async (url, init) => {
   // must not have claimed to be drawing anything yet.
   record.reportsBeforeSend = activeReports.length;
   calls.push(record);
+  if (nextThrows) {
+    const error = nextThrows;
+    nextThrows = null;
+    throw error;
+  }
   return nextResponse;
-};
+});
 
 // ── run ──────────────────────────────────────────────────────────────────────
 
@@ -254,6 +267,7 @@ async function until(predicate) {
 
 async function run(input, reply) {
   calls = [];
+  nextThrows = null;
   nextResponse = reply ?? jsonReply({ data: [{ b64_json: PNG_1PX.toString('base64') }] });
   const { exec, reports } = makeExec();
   const result = await tool.execute(input, exec);
@@ -613,8 +627,10 @@ panelSent = sent;
   const settingsIds = settingsItems.map((item) => item.id);
   check('Composer menu holds the generation defaults', composerIds.join(',') === 'set-model,set-quality,set-size', composerIds.join(','));
   check('Composer menu no longer offers the endpoint', !composerIds.includes('set-api-key') && !composerIds.includes('set-base-url'));
-  check('Toolcase settings menu holds the endpoint', settingsIds.join(',') === 'set-api-key,set-base-url', settingsIds.join(','));
+  check('Toolcase settings menu holds the endpoint', settingsIds.join(',') === 'set-api-key,set-base-url,set-proxy,test-connection', settingsIds.join(','));
   check('key status is reported in the settings menu', settingsItems[0].description === locale['status.notSet'], settingsItems[0].description);
+  check('the proxy row says when nothing is configured', settingsItems[2].description === locale['proxy.direct'], settingsItems[2].description);
+  check('the test row explains itself before the first run', settingsItems[3].description === locale['menu.test.desc'], settingsItems[3].description);
 
   // Submenus instead of a dialog: one hover, one click, no confirm step.
   const modelRow = composerMenu.find((item) => item.id === 'set-model');
@@ -846,6 +862,126 @@ panelSent = sent;
   // something renders the generic fallback picture instead of its own icon.
   const drifted = [...usedNames()].filter((name) => !(name in committed)).concat(Object.keys(committed).filter((name) => !usedNames().includes(name)));
   check('the icon set matches exactly what the page uses', drifted.length === 0, drifted.join(', '));
+}
+
+// 17 — the proxy: resolved, never leaked, and actually handed to the request.
+{
+  // Stored setting wins, then the environment, then direct.
+  const env = { HTTPS_PROXY: 'http://env-proxy:8080' };
+  check('a stored proxy wins over the environment', resolveProxy('127.0.0.1:7890', env) === 'http://127.0.0.1:7890', resolveProxy('127.0.0.1:7890', env));
+  check('a scheme is added when the user omits it', resolveProxy('127.0.0.1:7890', {}) === 'http://127.0.0.1:7890');
+  check('an explicit scheme is kept', resolveProxy('socks5://127.0.0.1:1080', {}) === 'socks5://127.0.0.1:1080');
+  check('the environment is used when nothing is stored', resolveProxy('  ', env) === 'http://env-proxy:8080', resolveProxy('', env));
+  check('lowercase proxy variables are understood too', resolveProxy(undefined, { https_proxy: 'http://lower:1' }) === 'http://lower:1');
+  check('no proxy anywhere means a direct connection', resolveProxy(undefined, {}) === '', resolveProxy(undefined, {}));
+
+  // The stored proxy reaches the request as a proxy dispatcher, not just as text.
+  await store.set('proxyUrl', 'http://user:secret@127.0.0.1:7890');
+  const proxied = await run(base);
+  check('a stored proxy is used for the request', String(proxied.call.dispatcher?.constructor?.name).startsWith('ProxyAgent'), String(proxied.call.dispatcher?.constructor?.name));
+  check('a proxy with credentials still gets a dispatcher', !!proxied.call.dispatcher);
+
+  // …and the credentials are masked wherever a human can see them.
+  const proxiedMenu = await menus.settings.getMenu({ surface: 'toolcase' });
+  const proxyRow = proxiedMenu.find((item) => item.id === 'set-proxy');
+  check('the settings row masks proxy credentials', proxyRow.description.includes('***') && !proxyRow.description.includes('secret'), proxyRow.description);
+
+  await store.delete('proxyUrl');
+  const direct = await run(base);
+  const directName = String(direct.call.dispatcher?.constructor?.name);
+  check('a direct request uses the plain agent', !!directName && !directName.startsWith('ProxyAgent'), directName);
+  const directMenu = await menus.settings.getMenu({ surface: 'toolcase' });
+  check('a cleared proxy reports the fallback plainly', typeof directMenu.find((item) => item.id === 'set-proxy').description === 'string');
+}
+
+// 18 — a failure says where it broke, instead of only "fetch failed".
+{
+  const refused = Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:7890'), {
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      hostname: '127.0.0.1',
+    }),
+  });
+  await store.set('proxyUrl', 'http://127.0.0.1:7890');
+  const { result, text, call, reports } = await (async () => {
+    calls = [];
+    nextThrows = refused;
+    nextResponse = null;
+    const { exec, reports: r2 } = makeExec();
+    const r = await tool.execute({ ...base }, exec);
+    return { result: r, text: r.content[0]?.text ?? '', call: calls[0], reports: r2 };
+  })();
+  check('a dead proxy is an error, not a silent success', result.isError === true);
+  check('the failing stage is named', text.includes('connect'), text);
+  check('the cause chain is shown instead of "fetch failed" alone', text.includes('ECONNREFUSED') && text.includes('fetch failed'), text);
+  check('the hint says the proxy refused the connection', text.includes(locale['diag.hint.refused'].slice(0, 12)), text);
+  check('the proxy in use is reported', text.includes('127.0.0.1:7890'), text);
+  check('the diagnostic never leaks the request body or key', !text.includes('test-key') && !text.includes('a red square'), text);
+  // One "starting" report is the boundary marker; a dead connection must not
+  // then keep ticking elapsed heartbeats for a request nobody is serving.
+  check('a request that dies immediately reports once and stops', reports.length === 1, JSON.stringify(reports));
+  check('the request still had a dispatcher', !!call?.dispatcher);
+
+  // A timeout on a direct connection is the other shape of the same bug.
+  nextThrows = Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(new Error('Connect Timeout Error'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+  });
+  await store.delete('proxyUrl');
+  const timedOut = await tool.execute({ ...base }, makeExec().exec);
+  const timeoutText = timedOut.content[0]?.text ?? '';
+  check('a timeout is explained as a timeout', timeoutText.includes(locale['diag.hint.timeout'].slice(0, 8)), timeoutText);
+  check('a direct timeout says no proxy was used', timeoutText.includes(locale['diag.direct'].slice(0, 4)), timeoutText);
+
+  // DNS failures point at the domain, and TLS interception is called out.
+  for (const [code, key] of [['ENOTFOUND', 'diag.hint.dns'], ['SELF_SIGNED_CERT_IN_CHAIN', 'diag.hint.tls']]) {
+    nextThrows = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(`boom ${code}`), { code }) });
+    const failed = await tool.execute({ ...base }, makeExec().exec);
+    check(`${key} is offered for ${code}`, (failed.content[0]?.text ?? '').includes(locale[key].slice(0, 8)), failed.content[0]?.text);
+  }
+  nextThrows = null;
+}
+
+// 19 — the connection test costs nothing and reports what it proved.
+{
+  const dialogs = [];
+  const originalDialog = ctx.ui.showModalDialog;
+  ctx.ui.showModalDialog = async (spec) => { dialogs.push(spec); return { action: 'ok' }; };
+
+  // A key is present, so the probe actually goes out — to /models, not /images.
+  ctx.secrets.get = async () => 'probe-key';
+  calls = [];
+  nextResponse = jsonReply({ data: [] });
+  await menus.settings.execute({}, 'test-connection');
+  check('the probe asks for the model list, not an image', calls[0]?.url.endsWith('/models') && calls[0]?.init?.method === 'GET', calls[0]?.url);
+  check('the probe sends the key as a bearer token', calls[0]?.init?.headers?.Authorization === 'Bearer probe-key');
+  check('a successful probe reports the latency', String(dialogs.at(-1)?.message ?? '').includes('ms'), String(dialogs.at(-1)?.message));
+  const okRow = (await menus.settings.getMenu({ surface: 'toolcase' })).find((item) => item.id === 'test-connection');
+  check('the settings row remembers the probe result', okRow.description === locale['probe.ok'].replace('{ms}', okRow.description.match(/\d+/)?.[0] ?? ''), okRow.description);
+
+  // 401: the transport worked and the key did not — say exactly that.
+  nextResponse = jsonReply({ error: { message: 'bad key' } }, { status: 401, statusText: 'Unauthorized' });
+  await menus.settings.execute({}, 'test-connection');
+  check('a rejected key is not reported as a network failure', String(dialogs.at(-1)?.message ?? '').includes('401') && String(dialogs.at(-1)?.message).includes('TLS'), String(dialogs.at(-1)?.message));
+
+  // No key at all: fail before sending anything.
+  ctx.secrets.get = async () => null;
+  calls = [];
+  await menus.settings.execute({}, 'test-connection');
+  check('the probe refuses to run without a key', calls.length === 0 && String(dialogs.at(-1)?.message ?? '').includes('API'), String(dialogs.at(-1)?.message));
+
+  // The row that opens the proxy dialog stays a dialog (it is setup, not a toggle).
+  ctx.secrets.get = async () => 'probe-key';
+  ctx.ui.showModalDialog = async (spec) => {
+    dialogs.push(spec);
+    return spec.title === locale['menu.proxy'] ? { action: 'save', values: { proxy: '127.0.0.1:7891' } } : { action: 'dismissed' };
+  };
+  await menus.settings.execute({}, 'set-proxy');
+  const saved = (await menus.settings.getMenu({ surface: 'toolcase' })).find((item) => item.id === 'set-proxy');
+  check('the proxy dialog saves a normalized address', saved.description === 'http://127.0.0.1:7891/', saved.description);
+
+  ctx.ui.showModalDialog = originalDialog;
+  await store.delete('proxyUrl');
 }
 
 rmSync(storagePath, { recursive: true, force: true });
