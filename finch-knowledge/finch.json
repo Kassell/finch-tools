@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "minVersion": "1.7.0",
+  "name": "Knowledge Base",
+  "description": "Index private documents and images locally, then search them from Finch.",
+  "systemPrompt": "Use Knowledge Base to search, index or tag documents in the user's selected local source directory without changing their files.",
+  "main": "dist/index.js",
+  "activationEvents": ["onStartup"],
+  "miniToolType": "local",
+  "categories": ["productivity"],
+  "contributes": {
+    "tools": true,
+    "composerActions": [{ "id": "knowledge", "icon": "book", "tooltip": "Knowledge Base" }],
+    "appView": {
+      "icon": "book",
+      "description": "Scan, tag and search local documents without changing their files.",
+      "source": { "type": "local", "path": "dist/view.html" }
+    }
+  },
+  "permissions": { "filesystem": "readwrite", "network": true, "shell": true, "sessions": true }
+}
