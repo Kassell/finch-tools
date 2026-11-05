@@ -15,10 +15,10 @@ import { directoryKey, indexedDirectories, insideDirectory, TAG_COLORS } from '.
 import { IndexSkipError } from './indexing-result.js';
 import { remoteIndexRoot } from './index-location.js';
 
-export const ACCEPTED = ['.md', '.markdown', '.txt', '.doc', '.docx', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff'];
+export const ACCEPTED = ['.md', '.markdown', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff'];
 export const DEFAULT_TAG = 'default';
 const IMAGE = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff']);
-const OFFICE = new Set(['.doc', '.docx', '.pdf']);
+const OFFICE = new Set(['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf']);
 const PASSAGES_TABLE = 'passages_directory_v1';
 const DIMENSIONS = 512;
 /**

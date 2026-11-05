@@ -24,8 +24,11 @@ test('images go to the host’s dedicated image viewer, not the document preview
   }
 });
 
-test('PDF and Word stay outside Finch, along with anything unknown', () => {
-  for (const name of ['report.pdf', 'brief.doc', 'brief.docx', 'archive.zip', 'no-extension', '', 'folder.name/name', 'name.']) {
+test('PDF and Office files use the host document preview', () => {
+  for (const name of ['report.PDF', 'brief.doc', 'brief.docx', 'table.xls', 'table.xlsx', 'slides.ppt', 'slides.pptx']) assert.equal(previewRoute(name), 'document', name);
+});
+test('unknown binary formats stay outside Finch', () => {
+  for (const name of ['archive.zip', 'no-extension', '', 'folder.name/name', 'name.']) {
     assert.equal(previewRoute(name), 'external', name);
   }
 });
@@ -34,7 +37,7 @@ test('every type the library accepts is routed somewhere on purpose', () => {
   // A new accepted extension that nobody routed would silently open externally.
   const expected = new Map([['.md', 'text'], ['.markdown', 'text'], ['.txt', 'text'], ['.png', 'image'], ['.jpg', 'image'],
     ['.jpeg', 'image'], ['.webp', 'image'], ['.bmp', 'image'], ['.tif', 'image'], ['.tiff', 'image'],
-    ['.pdf', 'external'], ['.doc', 'external'], ['.docx', 'external']]);
+    ['.pdf', 'document'], ['.doc', 'document'], ['.docx', 'document'], ['.xls', 'document'], ['.xlsx', 'document'], ['.ppt', 'document'], ['.pptx', 'document']]);
   assert.deepEqual(ACCEPTED.slice().sort(), [...expected.keys()].sort(), 'the accepted list changed');
   for (const [extension, route] of expected) assert.equal(previewRoute(`file${extension}`), route, extension);
 });
@@ -49,9 +52,10 @@ test('text and images reach the host preview, external types are left to the cal
   assert.deepEqual(calls, [[true, '/library/notes.md'], [true, '/library/scan.png']], 'the path alone tells the host which viewer to use');
   assert.deepEqual(fallbacks, []);
 
-  // A PDF never reaches the host at all: the caller opens it externally instead.
-  assert.equal(openListedDocument(host, 'report.pdf', '/library/report.pdf', onUnavailable), false);
-  assert.deepEqual(calls.length, 2, 'the host was not asked to preview it');
+  assert.equal(openListedDocument(host, 'report.pdf', '/library/report.pdf', onUnavailable), true);
+  assert.deepEqual(calls.at(-1), [true, '/library/report.pdf']);
+  assert.equal(openListedDocument(host, 'program.exe', '/library/program.exe', onUnavailable), false);
+  assert.equal(calls.length, 3, 'unknown binaries never reach the preview');
 });
 
 test('a listed document opens in the host built-in preview when the page bridge has one', () => {

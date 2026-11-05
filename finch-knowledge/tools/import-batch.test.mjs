@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { fixtureLink as symlink, nativeTarget, fixtureRm as rm } from './test-platform.mjs';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -22,7 +22,7 @@ function storage(root) {
 
 /** A workspace tree that exercises nesting, hidden files, symlinks and unsupported types. */
 async function workspaceFixture() {
-  const root = await mkdtemp(join(tmpdir(), 'finch-knowledge-batch-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'finch-knowledge-batch-')));
   // Point the engine loader at the copy already in node_modules so nothing is downloaded.
   const target = nativeTarget;
   const native = resolve(`node_modules/@lancedb/lancedb-${target}/lancedb.${target}.node`);
@@ -39,7 +39,7 @@ async function workspaceFixture() {
   await writeFile(join(workspace, 'readme.txt'), 'plain text notes');
   // Noise a folder import has to pass over rather than fail on.
   await writeFile(join(workspace, 'contracts', '.draft.md'), 'hidden draft, must not be indexed');
-  await writeFile(join(workspace, 'contracts', 'sheet.xlsx'), 'unsupported type');
+  await writeFile(join(workspace, 'contracts', 'opaque.bin'), 'unsupported type');
   const outside = join(root, 'outside.md');
   await writeFile(outside, '# Outside\n\nNot part of the workspace.');
   await symlink(outside, join(workspace, 'escape.md'));
@@ -66,7 +66,7 @@ test('a folder is imported recursively, and what cannot be indexed is counted no
     const result = await tool.execute({ action: 'index', path: 'contracts' }, exec);
     assert.equal(result.isError, false);
     const text = result.content[0].text;
-    // nda.md and the nested lease.md; the hidden draft, the xlsx and the symlink are passed over.
+    // nda.md and the nested lease.md; the hidden draft, the binary and the symlink are passed over.
     assert.match(text, /Indexed 2 file\(s\)/);
     assert.match(text, /hidden files 1/);
     assert.match(text, /unsupported types 1/);
