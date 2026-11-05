@@ -3,7 +3,7 @@
   "minVersion": "1.7.0",
   "name": "Knowledge Base",
   "description": "Index private documents and images locally, then search them from Finch.",
-  "systemPrompt": "Use Knowledge Base to search, index or tag documents in the user's selected local source directory without changing their files.",
+  "systemPrompt": "Use Knowledge Base for the selected library's documents and tags; preserve originals and distinguish missing sources from unavailable drives or shares.",
   "main": "dist/index.js",
   "activationEvents": ["onStartup"],
   "miniToolType": "local",
