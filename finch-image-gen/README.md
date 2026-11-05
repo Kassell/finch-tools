@@ -68,6 +68,20 @@ Editing needs a Composer to write into, so the editor opens from a session panel
 | Short animation | `output_format: gif` with `frame_count` (2-16, default 9) and `frame_duration_ms` (default 200) |
 | Vector output | `output_format: svg` — prompt only, one file, no streaming |
 
+### Which file type
+
+There is no single right default, and you don't have to name one — describing the job is enough, the tool picks the format for it:
+
+| What you want | What comes back |
+| --- | --- |
+| Sticker, logo, icon, cut-out product to place on another background | `png` or `webp` + `background: transparent` |
+| A photo that should look right and stay small | `jpeg` (optionally a compression level) |
+| Something for a web page, an app or a chat | `webp` |
+| Something that must scale or print | `svg` (Image 2.6) |
+| Motion | `gif` (Image 2.6) |
+
+Transparency only exists in `png` and `webp`; asking for `jpeg`, `gif` or `svg` with a transparent background switches to `png` and says so.
+
 Quality and size both drive cost and waiting time, so it's worth drafting low and only raising both for the version you keep.
 
 ### GIF and SVG (Image 2.6)
@@ -168,6 +182,20 @@ When something does fail, the error message is specific rather than a bare `fetc
 | 想要小文件 | `jpeg` 或 `webp`，可再指定压缩率 |
 | 短动画 | `output_format: gif`，配合 `frame_count`（2-16，默认 9）与 `frame_duration_ms`（默认 200） |
 | 矢量图 | `output_format: svg`——只按提示词生成，一次一张，不支持预览流 |
+
+### 选哪种文件格式
+
+没有唯一正确的默认值，也不用自己记参数——把用途说清楚，工具会按用途选：
+
+| 你要的 | 出来的 |
+| --- | --- |
+| 贴纸、logo、图标、要放到别的背景上的抠图产品 | `png` 或 `webp` + `background: transparent` |
+| 要好看又要小体积的照片 | `jpeg`（可指定压缩率） |
+| 网页、App、聊天里用的素材 | `webp` |
+| 要放大或印刷的图形 | `svg`（Image 2.6） |
+| 动画 | `gif`（Image 2.6） |
+
+透明只存在于 `png` 和 `webp`；用 `jpeg`、`gif`、`svg` 要透明背景时会自动改成 `png` 并在结果里说明。
 
 画质和尺寸同时决定费用和耗时，建议先用低画质试，定下来再调高跑成品。
 

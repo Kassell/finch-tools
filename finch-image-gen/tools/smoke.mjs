@@ -356,6 +356,40 @@ const base = { prompt: 'a red square' };
   check('compression dropped for png', png.call.json.output_compression === undefined);
 }
 
+// 4b — transparency and file type: the pair the caller is expected to choose.
+{
+  const webp = await run({ ...base, background: 'transparent', output_format: 'webp' });
+  check('transparent keeps webp', webp.call.json.background === 'transparent' && webp.call.json.output_format === 'webp', JSON.stringify(webp.call.json));
+
+  const jpeg = await run({ ...base, background: 'transparent', output_format: 'jpeg' });
+  check('transparent refuses jpeg and falls back to png', jpeg.call.json.output_format === 'png' && jpeg.call.json.background === 'transparent', JSON.stringify(jpeg.call.json));
+  check('the jpeg fallback is reported, not hidden', jpeg.text.split('\n').some((line) => line.startsWith('!')), jpeg.text);
+
+  const opaque = await run({ ...base, background: 'opaque' });
+  check('an explicit opaque background is forwarded', opaque.call.json.background === 'opaque', JSON.stringify(opaque.call.json));
+  check('opaque does not force a format', opaque.call.json.output_format === undefined, JSON.stringify(opaque.call.json));
+
+  const auto = await run({ ...base, background: 'auto' });
+  check('auto is the endpoint default and stays unsent', auto.call.json.background === undefined, JSON.stringify(auto.call.json));
+
+  // jpeg is a first-class photo format: compression goes with it, transparency never does.
+  const photo = await run({ ...base, output_format: 'jpeg', output_compression: 70 });
+  check('jpeg carries its compression level', photo.call.json.output_format === 'jpeg' && photo.call.json.output_compression === 70, JSON.stringify(photo.call.json));
+  check('jpeg saves a .jpg file', photo.text.includes('.jpg'), photo.text);
+  check('jpeg never asks for transparent', photo.call.json.background === undefined, JSON.stringify(photo.call.json));
+
+  const compressedPng = await run({ ...base, output_compression: 70 });
+  check('png ignores compression', compressedPng.call.json.output_compression === undefined, JSON.stringify(compressedPng.call.json));
+
+  // The same rules hold on an edit, where the input image is the reference.
+  const refPath = join(storagePath, 'ref.png');
+  writeFileSync(refPath, PNG_1PX);
+  const editJpeg = await run({ ...base, reference_image_paths: [refPath], background: 'transparent', output_format: 'jpeg' });
+  check('an edit follows the same transparency rule', editJpeg.call.form.output_format === 'png' && editJpeg.call.form.background === 'transparent', JSON.stringify(editJpeg.call.form));
+  const editWebp = await run({ ...base, reference_image_paths: [refPath], output_format: 'webp', output_compression: 55 });
+  check('an edit keeps webp and its compression', editWebp.call.form.output_format === 'webp' && editWebp.call.form.output_compression === '55', JSON.stringify(editWebp.call.form));
+}
+
 // 5 — edits, masks and n.
 {
   const refPath = join(storagePath, 'ref.png');

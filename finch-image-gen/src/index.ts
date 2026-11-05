@@ -1453,19 +1453,20 @@ export function activate(ctx: finch.MiniToolContext): void {
             type: 'string',
             enum: BACKGROUND_ENUM as unknown as string[],
             description:
-              'auto (default), opaque, or transparent. Transparent needs output_format png (default) or webp.',
+              'auto (let the model decide, the default), opaque (a solid scene), or transparent (cut-out). Choose transparent whenever the user wants a sticker, logo, icon, cut-out product, avatar or anything that will be placed on another background — and then keep output_format on png or webp, the only two that carry transparency (jpeg/gif/svg are switched to png automatically and the result says so). Leave it unset for ordinary pictures, which should have their own background.',
           },
           output_format: {
             type: 'string',
             enum: FORMAT_ENUM as unknown as string[],
             description:
-              'png (default, best quality), jpeg (fastest), webp, gif (short animation, 2-16 frames) or svg (vector; generated fresh from the prompt only — it cannot be used while editing reference images).',
+              'Pick by what the file is for, not by habit: png (default — lossless, supports transparency, largest), webp (transparency plus a much smaller file, best for web pages, apps and chat), jpeg (no transparency, smallest photographic file), gif (a short animation, 2-16 frames, Image 2.6), svg (a vector that scales to any size or gets edited as shapes, Image 2.6; prompt only, never with reference images). A cut-out needs png or webp; a photo meant to look right and stay small is jpeg; something that must print or scale is svg; motion is gif.',
           },
           output_compression: {
             type: 'number',
             minimum: 0,
             maximum: 100,
-            description: 'Compression level 0-100 for jpeg/webp output only; ignored for png, gif and svg.',
+            description:
+              'Quality/size dial for jpeg and webp only (100 keeps the most quality, 60-80 is a good small-file default); ignored for png, gif and svg, whose sizes are set by size and quality instead.',
           },
           frame_count: {
             type: 'number',
