@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>生图工具</title>
+  <link rel="stylesheet" href="gallery.css">
+  <script defer src="gallery.js"></script>
+</head>
+<body>
+<main id="app">
+  <!-- The title and filters stay put; the grid scrolls under them. -->
+  <div id="topbar" class="topbar">
+    <header class="header">
+      <div class="title-group"><span class="title-icon" data-icon="book-image"></span><h1 id="title"></h1></div>
+      <span class="count" id="count"></span>
+    </header>
+    <nav id="tabs" class="tabs" aria-label="Gallery filters"></nav>
+  </div>
+  <div id="grid"></div>
+  <div id="scrollShadeBottom" class="scroll-shade-bottom" aria-hidden="true"></div>
+  <section id="empty" class="empty" hidden><span data-icon="image"></span><h2 id="emptyTitle"></h2><p id="emptyHint"></p></section>
+</main>
+
+<!-- This route occupies the webview, never the OS window or an oversized modal. -->
+<section id="editor" hidden aria-labelledby="editorTitle">
+  <header class="editor-header">
+    <button id="back" class="icon-button" type="button" data-icon="arrow-left"></button>
+    <div class="editor-heading"><h2 id="editorTitle"></h2><p id="editorMeta"></p></div>
+    <span id="saveState" class="muted" role="status"></span>
+  </header>
+  <div id="stage" class="stage">
+    <div id="imageSurface" class="image-surface" hidden>
+      <img id="editorImage" alt="" draggable="false">
+      <svg id="inkLayer" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
+      <div id="pins"></div>
+    </div>
+    <div id="imageStatus" class="image-status" role="status"></div>
+    <!-- Floats over the picture so it costs the image no height or position. -->
+    <div id="toolbar" class="toolbar" role="toolbar">
+      <button id="toolPen" class="tool" type="button" data-mode="pen"><span data-icon="pencil-line"></span><span data-text="editor.draw"></span></button>
+      <button id="toolComment" class="tool" type="button" data-mode="comment"><span data-icon="message-square-plus"></span><span data-text="editor.comment"></span></button>
+      <button id="toolSize" class="tool" type="button"><span data-icon="image-upscale"></span><span data-text="editor.size"></span></button>
+      <!-- The divider splits the marks you make from the ones you take back. -->
+      <span id="toolDivider" class="divider"></span>
+      <button id="undo" class="tool icon-only" type="button" data-icon="undo-2"></button>
+      <button id="clear" class="tool icon-only" type="button"><span id="clearIcon" data-icon="brush-cleaning"></span><span id="clearLabel" hidden></span></button>
+    </div>
+    <div id="sizeMenu" class="tool-menu" hidden>
+      <span id="sizeMenuTitle" class="menu-title"></span>
+      <div id="sizeMenuList"></div>
+    </div>
+    <div id="commentPopover" class="popover" hidden>
+      <div class="popover-row">
+        <span id="popoverIndex" class="popover-index"></span>
+        <button id="deleteComment" class="text-button" type="button" data-icon="trash-2"></button>
+      </div>
+      <textarea id="commentText" rows="2"></textarea>
+    </div>
+  </div>
+  <div class="editor-bottom">
+    <div class="composer">
+      <textarea id="instruction" rows="1"></textarea>
+      <button id="send" class="send" type="button" hidden><span id="sendIcon" data-icon="copy-plus"></span><span id="sendLabel" data-text="editor.deliver"></span></button>
+    </div>
+    <p id="scopeHint" class="scope-hint" hidden></p>
+  </div>
+</section>
+<div id="toolTooltip" class="tooltip" role="tooltip" hidden></div>
+<div id="notice" class="notice" role="status" hidden></div>
+</body>
+</html>

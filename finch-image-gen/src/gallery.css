@@ -1,0 +1,187 @@
+/* Native Finch surfaces, with light/dark fallbacks for browser tests. */
+:root {
+  color-scheme: light dark;
+  --bg: var(--finch-bg-main, #fafafa);
+  --surface: var(--finch-bg-elevated, #fff);
+  --hover: var(--finch-bg-hover, #efefef);
+  --text: var(--finch-text-primary, #202124);
+  --muted: var(--finch-text-secondary, #777b82);
+  --border: var(--finch-border, #e6e6e8);
+  --accent: var(--finch-accent, #3b82f6);
+  --ink: #ef5350;
+  --warning: #a5670b;
+  --gap: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: var(--finch-bg-main, #191919);
+    --surface: var(--finch-bg-elevated, #242424);
+    --hover: var(--finch-bg-hover, #303030);
+    --text: var(--finch-text-primary, #e8e8eb);
+    --muted: var(--finch-text-secondary, #a0a5ad);
+    --border: var(--finch-border, #353535);
+    --accent: var(--finch-accent, #62a2ff);
+    --warning: #e9b95d;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; min-width: 0; min-height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.5 var(--finch-font-body, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  -webkit-font-smoothing: antialiased;
+}
+button, textarea { font: inherit; }
+button { cursor: pointer; color: inherit; }
+/* One focus indicator per control: an outline on top of a border (or a hairline)
+   reads as two boxes. */
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.card:focus-visible::after { opacity: 0; }
+svg { display: block; width: 16px; height: 16px; flex: none; }
+button:disabled { opacity: .4; cursor: wait; }
+#app { max-width: 1188px; margin: 0 auto; padding: 0 20px 64px; }
+/* The grid keeps clear of the sticky filters above and the window edge below, so
+   neither end of the list reads as a clipped card. */
+#grid { padding: 14px 0 12px; }
+/* Title and filters ride along, with a divider once the grid passes under them. */
+.topbar { position: sticky; top: 0; z-index: 5; padding: 24px 0 20px; background: var(--bg); }
+.topbar.stuck { border-bottom: 1px solid var(--border); }
+.topbar::after { content: ''; position: absolute; top: 100%; left: 0; right: 0; height: 12px; pointer-events: none; opacity: 0; background: linear-gradient(var(--bg), transparent), linear-gradient(#00000012, transparent); transition: opacity .18s ease; }
+.topbar.has-before::after, .scroll-shade-bottom.has-after { opacity: 1; }
+.scroll-shade-bottom { position: fixed; z-index: 5; bottom: 0; left: 0; right: 0; height: 12px; pointer-events: none; opacity: 0; background: linear-gradient(transparent, var(--bg)), linear-gradient(transparent, #00000012); transition: opacity .18s ease; }
+body.editing .scroll-shade-bottom { display: none; }
+.topbar .tabs { margin-bottom: 0; }
+.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; gap: 12px; }
+.title-group { display: flex; align-items: center; gap: 8px; }
+.title-icon { color: var(--accent); }
+.title-icon svg { width: 22px; height: 22px; }
+h1 { font-size: 22px; font-weight: 700; letter-spacing: -.02em; margin: 0; }
+.count { font-size: 12px; color: var(--muted); background: var(--surface); padding: 3px 10px; border: 1px solid var(--border); border-radius: 20px; white-space: nowrap; }
+.tabs { display: flex; gap: 2px; margin-bottom: 20px; padding: 3px; width: fit-content; border-radius: 10px; background: var(--hover); }
+.tab { padding: 6px 14px; font-size: 13px; font-weight: 500; border: 0; border-radius: 7px; background: transparent; color: var(--muted); white-space: nowrap; }
+.tab.active { background: var(--surface); color: var(--text); box-shadow: var(--finch-shadow-sm, 0 1px 3px #0002); }
+.tab:hover { color: var(--text); }
+
+/* Explicit column widths never grow when a column has few images. */
+#grid { display: grid; grid-template-columns: repeat(var(--columns, 2), minmax(0, var(--card-width, 220px))); gap: var(--gap); align-items: start; }
+.column { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.card { position: relative; width: 100%; max-width: 220px; overflow: hidden; border-radius: 10px; cursor: zoom-in; background: var(--hover); isolation: isolate; container-type: size; }
+.card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 0 1px #80808020; }
+.card img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.card .image-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
+.card .image-placeholder svg { width: 24px; height: 24px; opacity: .5; }
+.card-actions { position: absolute; right: 6px; top: 6px; z-index: 2; display: flex; gap: 4px; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .15s, transform .15s; }
+.card-action { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid #ffffff30; border-radius: 7px; background: #202020aa; color: #fff; backdrop-filter: blur(8px); }
+.card-action svg { width: 13px; height: 13px; }
+.card-action:hover { background: #101010ee; }
+.card-action.danger:hover { background: #b82929; }
+.prompt-overlay { position: absolute; bottom: 0; left: 0; right: 0; padding: 28px 10px 10px; background: linear-gradient(transparent, #000b 60%, #000c); color: #fff; opacity: 0; pointer-events: none; transform: translateY(3px); transition: opacity .15s, transform .15s;
+  /* The buttons own the top ~32px of the card: the prompt must never grow up
+     into them, however short the picture makes the card. */
+  max-height: calc(100% - 34px); overflow: hidden; }
+/* A card too short for two lines gets one: the buttons keep their row, and the
+   prompt stays visible instead of vanishing. */
+.prompt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+/* A wide picture makes a short card: one line, tighter padding — still clear of
+   the buttons and never clipped mid-glyph. */
+@container (max-height: 120px) {
+  .prompt-overlay { padding: 14px 8px 6px; }
+  .prompt { -webkit-line-clamp: 1; font-size: 10px; }
+}
+.card:hover .card-actions, .card:focus-within .card-actions, .card:hover .prompt-overlay, .card:focus-within .prompt-overlay { opacity: 1; pointer-events: auto; transform: none; }
+.empty { text-align: center; color: var(--muted); padding: 64px 16px; }
+.empty > span svg { margin: 0 auto 14px; width: 36px; height: 36px; opacity: .4; }
+.empty h2 { font-size: 14px; font-weight: 500; }
+.empty p { max-width: 340px; margin: 8px auto; font-size: 12px; }
+
+/* Full-bleed editor lives strictly inside this webview (Panel or App View). */
+body.editing { overflow: hidden; }
+#editor { position: fixed; inset: 0; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); z-index: 10; }
+.editor-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; flex: none; }
+.icon-button { display: grid; place-items: center; border: 0; background: transparent; width: 30px; height: 30px; border-radius: 7px; flex: none; }
+.icon-button:hover { background: var(--hover); }
+.editor-heading { min-width: 0; flex: 1; }
+.editor-heading h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.editor-heading p { margin: 2px 0 0; font-size: 10px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.muted { color: var(--muted); font-size: 10px; }
+/* The stage is a size container so the frame can ask "which is the tighter
+   limit, the width or the height?" and be scaled natively — no per-frame JS,
+   and the ratio can never drift. */
+.stage { flex: 1 1 0; min-height: 72px; min-width: 0; position: relative; overflow: hidden; margin: 0 12px; display: flex; align-items: center; justify-content: center; container-type: size; }
+.image-surface { position: relative; flex: 0 0 auto; width: min(100cqw, calc(var(--natural-ratio, 1) * 100cqh)); aspect-ratio: var(--natural, 1); user-select: none; touch-action: none; }
+.image-surface[data-mode=pen], .image-surface[data-mode=comment] { cursor: crosshair; }
+#editorImage { display: block; width: 100%; height: 100%; pointer-events: none; }
+#inkLayer, #pins { position: absolute; inset: 0; width: 100%; height: 100%; }
+#inkLayer { overflow: visible; pointer-events: none; }
+#pins { pointer-events: none; }
+.pin { position: absolute; width: 22px; height: 22px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: var(--ink); color: #fff; font-size: 10px; font-weight: 600; transform: translate(-50%, -50%); box-shadow: 0 1px 4px #0005; pointer-events: auto; cursor: grab; touch-action: none; }
+.pin.selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 30%, transparent), 0 1px 4px #0005; }
+.pin.dragging { cursor: grabbing; }
+.image-status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.editor-bottom { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 14px 12px; }
+
+/* Floating capsule: the picture keeps the whole stage, the tools sit on top.
+   `left: 0; right: 0` (rather than `left: 50%`) hands the capsule the full stage
+   as its available width — with `left: 50%` the shrink-to-fit box only ever got
+   half of it and wrapped onto a second row while the stage was still empty.
+   Wrapping stays on as a last resort for genuinely tiny panels. */
+.toolbar { position: absolute; left: 0; right: 0; bottom: 8px; margin: 0 auto; width: fit-content; max-width: 100%; z-index: 2; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 2px; padding: 4px; border: 1px solid var(--border); border-radius: 13px; background: color-mix(in srgb, var(--surface) 84%, transparent); backdrop-filter: blur(12px); box-shadow: 0 6px 24px #0000001f; }
+.tool { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 4px 9px; border-radius: 9px; border: 0; background: transparent; font-size: 12px; white-space: nowrap; }
+.tool:hover { background: var(--hover); }
+.tool[aria-pressed=true] { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tool.icon-only { width: 30px; padding: 4px; }
+.tool.clear-confirm { color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, transparent); padding: 4px 6px; font-size: 11px; }
+.tool.clear-confirm:hover { background: color-mix(in srgb, var(--warning) 24%, transparent); }
+.toolbar[data-confirming=true] .tool [data-text] { display: none; }
+.divider { width: 1px; height: 18px; background: var(--border); margin: 0 3px; }
+.scope-hint { margin: 0; font-size: 11px; color: var(--muted); text-align: center; line-height: 1.4; }
+
+/* Comment bubble anchored to its pin, so the footer never changes height. */
+.popover { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 5px; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 8px 26px #00000033; }
+.popover-index { font-size: 10px; font-weight: 600; color: var(--ink); }
+.popover textarea { min-height: 46px; max-height: 112px; }
+.popover-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.text-button { border: 0; background: transparent; padding: 2px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.text-button:hover { color: var(--text); }
+.popover .text-button svg { width: 14px; height: 14px; }
+
+/* Size picker: the same aspect presets the Composer menu offers. */
+.tool-menu { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); box-shadow: 0 8px 26px #00000033; }
+.menu-title { padding: 0 6px 4px; font-size: 10px; font-weight: 600; color: var(--muted); }
+#sizeMenuList { display: flex; flex-direction: column; gap: 2px; }
+/* Buttons shrink to their content by default, which gave every row a different
+   highlight width; they fill the menu and the ratio lines up on the right. */
+.menu-row { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; font-family: inherit; text-align: left; cursor: pointer; }
+.menu-row:hover { background: var(--hover); }
+.menu-row[aria-checked=true] { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.menu-row svg { width: 15px; height: 15px; flex: none; }
+.menu-row .menu-ratio { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.composer { display: flex; align-items: flex-end; justify-content: center; gap: 8px; }
+/* The field is a comfortable reading width, not the whole panel; the button
+   stays right next to it. */
+.composer textarea { flex: 0 1 430px; min-width: 0; height: 34px; min-height: 34px; max-height: 96px; resize: none; }
+.send { display: inline-flex; align-items: center; gap: 6px; flex: none; min-height: 34px; padding: 6px 12px; border: 1px solid var(--accent); border-radius: 9px; background: var(--accent); color: #fff; font-size: 12px; white-space: nowrap; }
+.send:hover { filter: brightness(1.05); }
+textarea { border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; background: var(--surface); color: var(--text); font-size: 12px; line-height: 1.5; }
+/* The UA focus ring lands outside the border and reads as a second box, so the
+   accent border alone is the focus indicator here. */
+textarea:focus, textarea:focus-visible { outline: none; border-color: var(--accent); }
+.send:focus-visible { outline-offset: 0; }
+.tooltip { position: fixed; z-index: 40; max-width: calc(100vw - 12px); pointer-events: none; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 2px 8px #0002; color: var(--text); font-size: 11px; white-space: nowrap; }
+.notice { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: 0 4px 20px #0002; z-index: 30; max-width: 90%; font-size: 12px; }
+@media (max-width: 400px) {
+  #app { padding: 0 12px 32px; }
+  .topbar { padding: 16px 0 16px; }
+  .editor-bottom { padding: 6px 10px 10px; }
+  .editor-header { padding: 10px 10px 4px; }
+  .tool span[data-text] { display: none; }
+  .tool { padding: 4px 7px; }
+}
+@media (hover: none) {
+  .card-actions { opacity: 1; pointer-events: auto; transform: none; }
+  .card .badges { max-width: calc(100% - 70px); }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

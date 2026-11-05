@@ -1,11 +1,255 @@
 import type * as finch from 'finch';
-import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Agent, FormData as HttpFormData, ProxyAgent, fetch as undiciFetch } from 'undici';
+import { parseAnnotations, type GalleryAnnotations } from './gallery-model';
+
+/**
+ * The pack id shared by the manifest declaration, the registration below and
+ * every `ext:` reference. Declaring the pack in the manifest only reserves the
+ * namespace: the SVGs themselves have to be registered at runtime, otherwise
+ * every reference silently resolves to nothing and no icon renders.
+ */
+const ICON_PACK_ID = 'image-gen-icons';
+const ICON_FILES = [
+  'book-image', 'image', 'cpu-ai', 'paintbrush', 'image-upscale', 'settings', 'key-round', 'link',
+  'square', 'rectangle-vertical', 'rectangle-horizontal', 'globe', 'plug-zap',
+] as const;
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
-const DEFAULT_MODEL = 'gpt-image-1.5';
+/**
+ * Defaults are the cheapest combination, on purpose: Flare is the fast/cheap
+ * everyday model, `low` + 1024x1024 is the draft tier. Anything better costs
+ * real money and time, so it has to be asked for — the system prompt says the
+ * same thing so the agent does not "helpfully" render at max quality.
+ */
+const DEFAULT_MODEL = 'gpt-image-2.6-flare';
+const DEFAULT_QUALITY = 'low';
+const DEFAULT_SIZE = '1024x1024';
+
 const BASE_URL_STORAGE_KEY = 'baseUrl';
 const API_KEY_STORAGE_KEY = 'openaiApiKey';
+const PROXY_STORAGE_KEY = 'proxyUrl';
+const MODEL_STORAGE_KEY = 'defaultModel';
+const QUALITY_STORAGE_KEY = 'defaultQuality';
+const SIZE_STORAGE_KEY = 'defaultSize';
+
+/**
+ * Aspect-ratio entries for the Composer size submenu. Every one has to pass the
+ * same local validation a caller-supplied size passes — the smoke suite checks
+ * each — so what is offered can never drift from what the API accepts.
+ */
+const SIZE_CHOICES = [
+  { size: '1024x1024', ratio: '1:1', icon: 'square', label: 'size.square' },
+  { size: '768x1024', ratio: '3:4', icon: 'rectangle-vertical', label: 'size.portrait' },
+  { size: '720x1280', ratio: '9:16', icon: 'rectangle-vertical', label: 'size.story' },
+  { size: '1024x768', ratio: '4:3', icon: 'rectangle-horizontal', label: 'size.landscape' },
+  { size: '1280x720', ratio: '16:9', icon: 'rectangle-horizontal', label: 'size.wide' },
+] as const;
+
+/**
+ * Model ids offered in the settings menu. Anything else is forwarded verbatim so
+ * relay/proxy endpoints can expose their own ids — only the shorthands below are
+ * expanded, never guessed at.
+ *
+ * The row stays short (the variant name, with its family as the small trailing
+ * text) because the full names made the menu unreadable, and rows carry no
+ * hover text: a tooltip on hover would cover the neighbouring rows.
+ */
+const MODEL_CHOICES: Array<{ id: string; labelKey: string; family: string }> = [
+  { id: 'gpt-image-2.6-flare', labelKey: 'model.flare', family: 'Image 2.6' },
+  { id: 'gpt-image-2.6-sunburst', labelKey: 'model.sunburst', family: 'Image 2.6' },
+  { id: 'gpt-image-2.5-flare', labelKey: 'model.flare', family: 'Image 2.5' },
+  { id: 'gpt-image-2.5-sunburst', labelKey: 'model.sunburst', family: 'Image 2.5' },
+  { id: 'gpt-image-2', labelKey: 'model.previous', family: 'Image 2' },
+  { id: 'gpt-image-1.5', labelKey: 'model.legacy', family: 'Image 1.5' },
+];
+
+/**
+ * `flare` / `sunburst` mean the current generation, so they move with it; the
+ * dated families keep an explicit prefix. A bare `gpt-image-2.6` names two
+ * variants and is never guessed at — `resolveModel` falls back instead.
+ */
+const MODEL_ALIASES: Record<string, string> = {
+  flare: 'gpt-image-2.6-flare',
+  sunburst: 'gpt-image-2.6-sunburst',
+  'gpt-image-flare': 'gpt-image-2.6-flare',
+  'gpt-image-sunburst': 'gpt-image-2.6-sunburst',
+  'gpt-image-2.6-fl': 'gpt-image-2.6-flare',
+  'gpt-image-2.6-sun': 'gpt-image-2.6-sunburst',
+  '2.6-flare': 'gpt-image-2.6-flare',
+  '2.6-sunburst': 'gpt-image-2.6-sunburst',
+  'gpt-image-2.5-fl': 'gpt-image-2.5-flare',
+  'gpt-image-2.5-sun': 'gpt-image-2.5-sunburst',
+  '2.5-flare': 'gpt-image-2.5-flare',
+  '2.5-sunburst': 'gpt-image-2.5-sunburst',
+};
+
+/** Resolve a user/AI-supplied model name to a concrete model id. */
+export function resolveModel(raw: unknown, fallback: string = DEFAULT_MODEL): string {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!value) return fallback;
+  // A bare family name ("gpt-image-2.6") does not name a variant — honour what
+  // the user configured rather than silently picking one of the two.
+  if (value === 'gpt-image-2.6' || value === 'gpt-image-2.5') return fallback;
+  return MODEL_ALIASES[value] ?? value;
+}
+
+/**
+ * GIF and SVG are Image 2.6 capabilities: the docs gate them on "access to the
+ * GIF preview / SVG model selection" for the chosen model. Asking 2.5 (or older)
+ * for one is a guaranteed 400, so a known older GPT Image family is moved to its
+ * 2.6 sibling and the caller is told. IDs we do not recognise are left alone —
+ * a relay's own model name may well implement these formats.
+ */
+const OLDER_IMAGE_FAMILY = /^gpt-image-(1|1\.5|2|2\.5)(-(flare|sunburst))?(-\d{4}-\d{2}-\d{2})?$/;
+
+export function needsImage26(model: string, format: string): boolean {
+  if (format !== 'gif' && format !== 'svg') return false;
+  return OLDER_IMAGE_FAMILY.test(model.trim().toLowerCase());
+}
+
+export function image26Sibling(model: string): string {
+  return /sunburst/i.test(model) ? 'gpt-image-2.6-sunburst' : 'gpt-image-2.6-flare';
+}
+
+// ── size ─────────────────────────────────────────────────────────────────────
+
+/** Sizes the docs call out as popular; any other valid WxH is accepted too. */
+export const SIZE_PRESETS = [
+  'auto',
+  '1024x1024',
+  '1536x1024',
+  '1024x1536',
+  '2048x2048',
+  '2048x1152',
+  '2560x1440',
+  '3840x2160',
+  '2160x3840',
+] as const;
+
+const MIN_PIXELS = 655_360;
+const MAX_PIXELS = 8_294_400;
+const MAX_EDGE = 3_840;
+const MAX_RATIO = 3;
+/**
+ * The edit endpoint documents this ceiling for the GPT image models
+ * ("you can provide up to 16 images"), so extra references are refused locally
+ * rather than sent to come back as an opaque 400.
+ */
+const MAX_REFERENCE_IMAGES = 16;
+
+export type SizeCheck = { ok: true; size: string } | { ok: false; error: string };
+
+/**
+ * GPT Image 2.x accepts arbitrary `WIDTHxHEIGHT` dimensions within a set of
+ * constraints; validate locally so the caller gets an actionable message
+ * instead of an opaque 400 from the API.
+ */
+export function checkSize(raw: unknown, fallback = DEFAULT_SIZE): SizeCheck {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!value) return { ok: true, size: fallback };
+  if (value === 'auto') return { ok: true, size: 'auto' };
+
+  const match = /^(\d{3,4})x(\d{3,4})$/.exec(value);
+  if (!match) {
+    return {
+      ok: false,
+      error: `size must be "auto" or WIDTHxHEIGHT (e.g. 1024x1024), got "${raw}"`,
+    };
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const long = Math.max(width, height);
+  const short = Math.min(width, height);
+  const pixels = width * height;
+
+  if (width % 16 !== 0 || height % 16 !== 0) {
+    return { ok: false, error: `size ${width}x${height}: both edges must be multiples of 16` };
+  }
+  if (long > MAX_EDGE) {
+    return { ok: false, error: `size ${width}x${height}: no edge may exceed ${MAX_EDGE}px` };
+  }
+  if (long / short > MAX_RATIO) {
+    return { ok: false, error: `size ${width}x${height}: aspect ratio must not exceed 3:1` };
+  }
+  if (pixels < MIN_PIXELS || pixels > MAX_PIXELS) {
+    return {
+      ok: false,
+      error: `size ${width}x${height}: total pixels must be between ${MIN_PIXELS} and ${MAX_PIXELS}`,
+    };
+  }
+  return { ok: true, size: `${width}x${height}` };
+}
+
+// ── enums ────────────────────────────────────────────────────────────────────
+
+const QUALITY_ENUM = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+const BACKGROUND_ENUM = ['auto', 'opaque', 'transparent'] as const;
+/**
+ * Output formats. Edits support GIF but not SVG (the API documents "SVG edits are
+ * not supported"), so the two paths get their own lists; the tool schema exposes
+ * the union and the request builder refuses the impossible combinations with an
+ * actionable message instead of an opaque 400.
+ */
+const GENERATE_FORMAT_ENUM = ['png', 'jpeg', 'webp', 'gif', 'svg'] as const;
+const EDIT_FORMAT_ENUM = ['png', 'jpeg', 'webp', 'gif'] as const;
+const FORMAT_ENUM = GENERATE_FORMAT_ENUM;
+const MODERATION_ENUM = ['auto', 'low'] as const;
+/** GIF frames: the endpoint accepts 2–16 and assumes 9. */
+const MIN_FRAMES = 2;
+const MAX_FRAMES = 16;
+const DEFAULT_FRAMES = 9;
+const MIN_FRAME_MS = 10;
+const MAX_FRAME_MS = 655_350;
+const DEFAULT_FRAME_MS = 200;
+/** Reasoning effort of the SVG author model — separate from image quality. */
+const SVG_EFFORT_ENUM = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+/** Planning effort, independent of the rendering quality (`complexity`). */
+const COMPLEXITY_ENUM = ['low', 'medium', 'high'] as const;
+
+type QualityOption = (typeof QUALITY_ENUM)[number];
+type BackgroundOption = (typeof BACKGROUND_ENUM)[number];
+type FormatOption = (typeof FORMAT_ENUM)[number];
+type SvgEffortOption = (typeof SVG_EFFORT_ENUM)[number];
+type ComplexityOption = (typeof COMPLEXITY_ENUM)[number];
+
+const EXT_BY_FORMAT: Record<FormatOption, string> = { png: 'png', jpeg: 'jpg', webp: 'webp', gif: 'gif', svg: 'svg' };
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+};
+
+function pickEnum<T extends string>(raw: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof raw === 'string' && (allowed as readonly string[]).includes(raw.trim().toLowerCase())
+    ? (raw.trim().toLowerCase() as T)
+    : fallback;
+}
+
+function mimeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  return MIME_BY_EXT[ext] ?? 'image/png';
+}
+
+function sanitizeName(name: string): string {
+  return name
+    .replace(/[^a-zA-Z0-9-_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
+function clampInt(raw: unknown, min: number, max: number, fallback: number): number {
+  const num = typeof raw === 'number' && Number.isFinite(raw) ? Math.round(raw) : NaN;
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(max, Math.max(min, num));
+}
 
 function normalizeBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');
@@ -20,78 +264,217 @@ function isValidHttpUrl(url: string): boolean {
   }
 }
 
+// ── transport ────────────────────────────────────────────────────────────────
+
 /**
- * Keep reporting progress on a fixed interval while `work` is in flight, so the
- * UI still shows a live "N s elapsed" status if the user leaves and returns to
- * the session mid-generation, instead of freezing on the first message.
+ * Every request goes through this one function. It exists because the host's
+ * global `fetch` has no proxy support: a user behind Clash/V2Ray gets a bare
+ * `fetch failed` while the same request works in a terminal, and there is no
+ * way to hand the host's fetch a dispatcher (a foreign ProxyAgent is rejected
+ * with UND_ERR_INVALID_ARG). Bundling undici gives us that dispatcher, so the
+ * proxy is ours to configure.
  */
-async function withHeartbeat<T>(
-  work: Promise<T>,
-  progress: finch.ToolProgress,
-  stage: string,
-  baseMessage: string,
-  intervalMs = 4000,
-): Promise<T> {
-  const startedAt = Date.now();
-  progress.report({ stage, message: baseMessage });
-  const timer = setInterval(() => {
-    const elapsed = Math.round((Date.now() - startedAt) / 1000);
-    progress.report({ stage, message: `${baseMessage} (${elapsed}s elapsed)` });
-  }, intervalMs);
+type Transport = (url: string, init: Parameters<typeof undiciFetch>[1]) => ReturnType<typeof undiciFetch>;
+type HttpResponse = Awaited<ReturnType<Transport>>;
+
+const defaultTransport: Transport = (url, init) => undiciFetch(url, init);
+let transport: Transport = defaultTransport;
+
+/** Test hook: the smoke suite routes every request through its own stub. */
+export function setTransport(next: Transport | null): void {
+  transport = next ?? defaultTransport;
+}
+
+/** The saved proxy wins; otherwise follow the environment the host was started with. */
+export function resolveProxy(stored: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
+  const saved = stored?.trim();
+  if (saved) return normalizeProxy(saved);
+  const fromEnv = (env.HTTPS_PROXY ?? env.https_proxy ?? env.ALL_PROXY ?? env.all_proxy ?? env.HTTP_PROXY ?? env.http_proxy ?? '').trim();
+  return fromEnv ? normalizeProxy(fromEnv) : '';
+}
+
+function normalizeProxy(raw: string): string {
+  const value = raw.trim();
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`;
+}
+
+/** Diagnostics are shown to the user and written to logs: never leak credentials. */
+function maskProxy(url: string): string {
   try {
-    return await work;
-  } finally {
-    clearInterval(timer);
-  }
-}
-
-const SIZE_ENUM = ['auto', '1024x1024', '1024x1536', '1536x1024'] as const;
-const QUALITY_ENUM = ['auto', 'low', 'medium', 'high'] as const;
-
-type SizeOption = (typeof SIZE_ENUM)[number];
-type QualityOption = (typeof QUALITY_ENUM)[number];
-
-interface CreateImageInput {
-  prompt: string;
-  reference_image_paths?: string[];
-  size?: SizeOption;
-  quality?: QualityOption;
-  n?: number;
-  model?: string;
-  output_name?: string;
-  base_url?: string;
-}
-
-const MIME_BY_EXT: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-};
-
-function mimeForPath(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  return MIME_BY_EXT[ext] ?? 'image/png';
-}
-
-function sanitizeName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9-_]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
-}
-
-function clampN(n: unknown): number {
-  const num = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : 1;
-  return Math.min(4, Math.max(1, num));
-}
-
-async function readErrorMessage(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { error?: { message?: string } };
-    if (body?.error?.message) return body.error.message;
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      parsed.username = '***';
+      parsed.password = '';
+    }
+    return parsed.toString();
   } catch {
-    // ignore parse failure, fall through to status text
+    return '(invalid proxy URL)';
   }
-  return `${response.status} ${response.statusText}`;
 }
+
+const dispatchers = new Map<string, Agent | ProxyAgent>();
+function dispatcherFor(proxy: string): Agent | ProxyAgent {
+  const key = proxy || 'direct';
+  const cached = dispatchers.get(key);
+  if (cached) return cached;
+  // A dead proxy should fail as a timeout, not hang until the tool deadline.
+  const created = proxy
+    ? new ProxyAgent({ uri: proxy, connect: { timeout: 15_000 } })
+    : new Agent({ connect: { timeout: 15_000 } });
+  dispatchers.set(key, created);
+  return created;
+}
+
+/** Which step a request died in — the difference between "proxy" and "the model". */
+type Stage = 'connect' | 'read-response' | 'parse-json' | 'download-image' | 'save-file';
+
+/** A failure that still knows what was being attempted when it happened. */
+class RequestFailure extends Error {
+  constructor(
+    readonly stage: Stage,
+    readonly detail: unknown,
+    readonly elapsedMs: number,
+    readonly proxy: string,
+  ) {
+    super(detail instanceof Error ? detail.message : String(detail));
+    this.name = 'RequestFailure';
+  }
+}
+
+/** Every `code`/`syscall`/`host` on the way down the cause chain, in order. */
+function causeChain(error: unknown, depth = 0): string[] {
+  if (!error || depth > 3) return [];
+  const err = error as { name?: string; message?: string; code?: string; errno?: number; syscall?: string; hostname?: string; cause?: unknown };
+  const parts = [
+    err.name && err.name !== 'Error' ? err.name : '',
+    err.message ?? String(error),
+    err.code ? `code=${err.code}` : '',
+    err.errno !== undefined && !err.code ? `errno=${err.errno}` : '',
+    err.syscall ? `syscall=${err.syscall}` : '',
+    err.hostname ? `host=${err.hostname}` : '',
+  ].filter(Boolean);
+  return [parts.join(' '), ...causeChain(err.cause, depth + 1)];
+}
+
+/**
+ * Turn a failed request into something a person (or the agent) can act on.
+ * `fetch failed` alone is the bug this replaces: the reason lives in `cause`.
+ */
+export function describeFailure(
+  failure: RequestFailure,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string {
+  const chain = causeChain(failure.detail);
+  const haystack = chain.join(' ');
+  const proxyLine = failure.proxy ? t('diag.proxy', { proxy: maskProxy(failure.proxy) }) : t('diag.direct');
+
+  let hint = '';
+  if (haystack.includes('ENOTFOUND') || haystack.includes('EAI_AGAIN')) hint = t('diag.hint.dns');
+  else if (haystack.includes('ECONNREFUSED')) hint = t('diag.hint.refused');
+  else if (haystack.includes('ECONNRESET') || haystack.includes('EPIPE')) hint = t('diag.hint.reset');
+  else if (haystack.includes('UND_ERR_CONNECT_TIMEOUT') || haystack.includes('ETIMEDOUT')) hint = t('diag.hint.timeout');
+  else if (haystack.includes('CERT_') || haystack.includes('SELF_SIGNED_CERT') || haystack.includes('UNABLE_TO_VERIFY_LEAF_SIGNATURE')) {
+    hint = t('diag.hint.tls');
+  } else if (haystack.includes('UND_ERR_INVALID_ARG')) hint = t('diag.hint.invalidProxy');
+
+  // A direct request that cannot connect while the host was started with proxy
+  // variables is the signature of the reported Windows bug.
+  const envProxy = resolveProxy(undefined);
+  if (!hint && !failure.proxy && envProxy) hint = t('diag.hint.envProxy', { proxy: maskProxy(envProxy) });
+  if (!hint && !failure.proxy) hint = t('diag.hint.noProxy');
+
+  const lines = [
+    t('diag.title', { stage: failure.stage, ms: String(failure.elapsedMs) }),
+    proxyLine,
+    ...(chain.length ? [t('diag.chain', { chain: chain.join(' ← ') })] : []),
+    ...(hint ? [hint] : []),
+  ];
+  return lines.join('\n');
+}
+
+/** Uniform "everything that touches the network" plumbing. */
+function failure(stage: Stage, error: unknown, startedAt: number, proxy: string): RequestFailure {
+  return new RequestFailure(stage, error, Date.now() - startedAt, proxy);
+}
+
+async function readJsonBody<T>(response: HttpResponse, startedAt: number, proxy: string): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    throw failure('parse-json', error, startedAt, proxy);
+  }
+}
+
+// ── errors ───────────────────────────────────────────────────────────────────
+
+interface ApiErrorBody {
+  message?: string;
+  type?: string;
+  code?: string;
+  param?: string;
+  moderation_details?: {
+    moderation_stage?: string;
+    categories?: string[];
+  };
+}
+
+/**
+ * Turn an OpenAI image error into something the model can act on. `error.code`
+ * is the stable discriminator the docs recommend; moderation blocks additionally
+ * carry a stage and coarse categories worth surfacing as a remediation hint.
+ */
+export function formatApiError(error: ApiErrorBody | undefined, statusLine: string): string {
+  const parts: string[] = [];
+  const message = error?.message?.trim();
+  parts.push(message ? `${statusLine}: ${message}` : statusLine);
+  if (error?.code) parts.push(`(code: ${error.code})`);
+  if (error?.param) parts.push(`(param: ${error.param})`);
+
+  const details = error?.moderation_details;
+  const stage = details?.moderation_stage;
+  const categories = details?.categories?.length ? details.categories.join(', ') : '';
+
+  let hint = '';
+  switch (error?.code) {
+    case 'moderation_blocked':
+      if (stage === 'input') hint = 'The prompt or an input image was blocked — reword the prompt or swap the reference image, then retry.';
+      else if (stage === 'output') hint = 'A generated image was blocked — change the prompt and generate again.';
+      else hint = 'This request did not meet safety requirements — reword the prompt and try again.';
+      if (categories) hint += ` Categories: ${categories}.`;
+      break;
+    case 'image_generation_user_error':
+      hint = 'This error needs a changed request (prompt, size or input images) — do not retry it unchanged.';
+      break;
+    case 'content_policy_violation':
+      hint = 'Reword the prompt to describe neutral visual details before retrying.';
+      break;
+    default:
+      break;
+  }
+
+  const status = Number(statusLine.split(' ')[0]);
+  if (!hint && status === 401) hint = 'Check the API key (Composer toolbar → Image Gen settings → OpenAI API Key).';
+  if (!hint && status === 403) {
+    hint = 'The key lacks access to this model. GPT Image models may require OpenAI API organization verification.';
+  }
+  if (!hint && status === 429) hint = 'Rate limit or quota reached — wait a moment, or lower quality/size.';
+
+  return hint ? `${parts.join(' ')}\n${hint}` : parts.join(' ');
+}
+
+async function readErrorMessage(response: HttpResponse, startedAt?: number, proxy = ''): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: ApiErrorBody };
+    return formatApiError(body?.error, `${response.status} ${response.statusText}`);
+  } catch (error) {
+    // An error response we cannot read is still an HTTP error; only blame the
+    // body when there was no status at all.
+    if (startedAt === undefined) return `${response.status} ${response.statusText}`;
+    return `${response.status} ${response.statusText} (unreadable error body: ${causeChain(error).join(' ← ') || 'empty'})`;
+  }
+}
+
+// ── API calls ────────────────────────────────────────────────────────────────
 
 interface OpenAiImageItem {
   b64_json?: string;
@@ -100,66 +483,192 @@ interface OpenAiImageItem {
 
 interface OpenAiImageResponse {
   data?: OpenAiImageItem[];
+  /** True when streaming never delivered a final image and we fell back to the last preview. */
+  fromPartial?: boolean;
+}
+
+function authHeaders(apiKey: string): Record<string, string> {
+  return { Authorization: `Bearer ${apiKey}` };
 }
 
 async function callGenerate(
   baseUrl: string,
   apiKey: string,
+  proxy: string,
   body: Record<string, unknown>,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  started: () => void,
 ): Promise<OpenAiImageResponse> {
-  const response = await fetch(`${baseUrl}/images/generations`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response));
+  started();
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/images/generations`, {
+      method: 'POST',
+      headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    throw failure('connect', error, startedAt, proxy);
   }
-  return (await response.json()) as OpenAiImageResponse;
+  if (!response.ok) throw new Error(await readErrorMessage(response, startedAt, proxy));
+  return readJsonBody<OpenAiImageResponse>(response, startedAt, proxy);
 }
 
 async function callEdit(
   baseUrl: string,
   apiKey: string,
+  proxy: string,
   fields: Record<string, string>,
   referenceImagePaths: string[],
-  signal?: AbortSignal,
+  maskPath: string | undefined,
+  markupPath: string | undefined,
+  signal: AbortSignal | undefined,
+  started: () => void,
 ): Promise<OpenAiImageResponse> {
-  const form = new FormData();
-  for (const [key, value] of Object.entries(fields)) {
-    form.append(key, value);
-  }
+  // The bundled undici has its own FormData, and the host's global FormData is a
+  // different copy: handed to undici's fetch it would be sent as plain text.
+  // Global File/Blob are accepted by undici's FormData, so only the container
+  // has to come from our copy.
+  const form = new HttpFormData();
+  for (const [key, value] of Object.entries(fields)) form.append(key, value);
   for (const refPath of referenceImagePaths) {
     const buf = await fs.readFile(refPath);
-    const blob = new Blob([buf], { type: mimeForPath(refPath) });
-    form.append('image[]', blob, path.basename(refPath));
+    form.append('image[]', new File([buf], path.basename(refPath), { type: mimeForPath(refPath) }));
   }
-  const response = await fetch(`${baseUrl}/images/edits`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: form,
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response));
+  if (maskPath) {
+    const buf = await fs.readFile(maskPath);
+    form.append('mask', new File([buf], path.basename(maskPath), { type: mimeForPath(maskPath) }));
   }
-  return (await response.json()) as OpenAiImageResponse;
+  if (markupPath) {
+    // A transparent PNG laid over the first image: the marks guide the edit
+    // without being part of the picture the model starts from.
+    const buf = await fs.readFile(markupPath);
+    form.append('markup', new File([buf], path.basename(markupPath), { type: mimeForPath(markupPath) }));
+  }
+  // Announced here, not at the top: reading (and about to upload) the
+  // reference images is preparation, not generation.
+  started();
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/images/edits`, {
+      method: 'POST',
+      headers: authHeaders(apiKey),
+      body: form,
+      signal,
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    throw failure('connect', error, startedAt, proxy);
+  }
+  if (!response.ok) throw new Error(await readErrorMessage(response, startedAt, proxy));
+  return readJsonBody<OpenAiImageResponse>(response, startedAt, proxy);
+}
+
+/**
+ * Streaming generation. Only used when the caller asked for intermediate
+ * previews: each `partial_image` event is handed to `onPartial` so the tool call
+ * can show progress during a request that may run for minutes. The final image
+ * is taken from whichever event carries it; if the endpoint never sends one, the
+ * last preview is used rather than failing a request that already produced art.
+ */
+async function callGenerateStreaming(
+  baseUrl: string,
+  apiKey: string,
+  proxy: string,
+  body: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+  onPartial: (index: number, buf: Buffer) => void,
+  started: () => void,
+): Promise<OpenAiImageResponse> {
+  started();
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/images/generations`, {
+      method: 'POST',
+      headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ ...body, stream: true }),
+      signal,
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    throw failure('connect', error, startedAt, proxy);
+  }
+  if (!response.ok) throw new Error(await readErrorMessage(response, startedAt, proxy));
+  if (!response.body) throw new Error('The endpoint did not return a streaming body.');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let final: OpenAiImageItem | undefined;
+  const partials: OpenAiImageItem[] = [];
+
+  const handleEvent = (payload: string) => {
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (event.error) throw new Error(formatApiError(event.error as ApiErrorBody, 'stream error'));
+    const type = String(event.type ?? '');
+    if (type.includes('partial_image') && typeof event.b64_json === 'string') {
+      partials.push({ b64_json: event.b64_json });
+      onPartial(partials.length, Buffer.from(event.b64_json, 'base64'));
+      return;
+    }
+    if (Array.isArray(event.data) && event.data.length) {
+      final = event.data[event.data.length - 1] as OpenAiImageItem;
+    } else if (typeof event.b64_json === 'string') {
+      final = { b64_json: event.b64_json };
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      for (const line of block.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        handleEvent(payload);
+      }
+    }
+  }
+
+  if (final) return { data: [final] };
+  if (partials.length) return { data: [partials[partials.length - 1]], fromPartial: true };
+  return { data: [] };
+}
+
+// ── saving ───────────────────────────────────────────────────────────────────
+
+export interface SavedImage {
+  filePath: string;
+  width: number;
+  height: number;
+  bytes: number;
 }
 
 async function saveImages(
   items: OpenAiImageItem[],
   outDir: string,
   namePrefix: string,
-): Promise<string[]> {
+  extension: string,
+  proxy: string,
+): Promise<SavedImage[]> {
   await fs.mkdir(outDir, { recursive: true });
-  const saved: string[] = [];
+  const saved: SavedImage[] = [];
   const stamp = Date.now();
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -167,62 +676,843 @@ async function saveImages(
     if (item.b64_json) {
       buf = Buffer.from(item.b64_json, 'base64');
     } else if (item.url) {
-      const res = await fetch(item.url);
+      // Some endpoints return a URL instead of inline bytes; that download needs
+      // the same proxy and gets its own stage, so a CDN block is not mistaken
+      // for a generation failure.
+      const startedAt = Date.now();
+      let res: HttpResponse;
+      try {
+        res = await transport(item.url, { dispatcher: dispatcherFor(proxy) } as Parameters<Transport>[1]);
+      } catch (error) {
+        throw failure('download-image', error, startedAt, proxy);
+      }
       if (!res.ok) throw new Error(`Failed to download generated image: ${res.status} ${res.statusText}`);
-      buf = Buffer.from(await res.arrayBuffer());
+      try {
+        buf = Buffer.from(await res.arrayBuffer());
+      } catch (error) {
+        throw failure('download-image', error, startedAt, proxy);
+      }
     } else {
       continue;
     }
-    const fileName = `${namePrefix}-${stamp}-${i + 1}.png`;
-    const filePath = path.join(outDir, fileName);
-    await fs.writeFile(filePath, buf);
-    saved.push(filePath);
+    const filePath = path.join(outDir, `${namePrefix}-${stamp}-${i + 1}.${extension}`);
+    try {
+      await fs.writeFile(filePath, buf);
+    } catch (error) {
+      throw failure('save-file', error, Date.now(), proxy);
+    }
+    const { width, height } = readImageSize(buf, extension);
+    saved.push({ filePath, width, height, bytes: buf.length });
   }
   return saved;
 }
 
+/**
+ * Keep reporting progress on a fixed interval while `work` is in flight, so the
+ * UI still shows a live "N s elapsed" status if the user leaves and returns to
+ * the session mid-generation, instead of freezing on the first message.
+ *
+ * Nothing is reported until the work calls `started()`: reading and uploading
+ * local inputs is not generation, and claiming it with the image component
+ * would show a picture being drawn before the request even went out. `started()`
+ * fires exactly when the generation call goes on the wire, and every report
+ * after it uses `kind: 'image'` — Finch's dedicated image-generation animation
+ * (with the requested pixel size as a badge), the one component that says "a
+ * picture is being drawn" rather than "some tool is working".
+ */
+// ── connection probe ─────────────────────────────────────────────────────────
+
+interface ProbeResult {
+  /** One line for the settings row. */
+  summary: string;
+  /** Full explanation for the dialog. */
+  detail: string;
+}
+
+/**
+ * Prove the transport works without spending money: `GET /models` exercises DNS,
+ * proxy, TLS and the key, and costs no image generation. A 401 here is the good
+ * news case — the request arrived and only the key was rejected.
+ */
+async function probeConnection(ctx: finch.MiniToolContext, t: (key: string, values?: Record<string, string | number>) => string): Promise<ProbeResult> {
+  const storedBaseUrl = await ctx.storage.get<string>(BASE_URL_STORAGE_KEY);
+  const baseUrl = storedBaseUrl && storedBaseUrl.trim() ? normalizeBaseUrl(storedBaseUrl) : DEFAULT_BASE_URL;
+  const apiKey = (await ctx.secrets.get('OPENAI_API_KEY')) || (await ctx.storage.get<string>(API_KEY_STORAGE_KEY));
+  if (!apiKey) {
+    return { summary: t('probe.noKey'), detail: t('probe.noKey.detail') };
+  }
+  const proxy = resolveProxy(await ctx.storage.get<string>(PROXY_STORAGE_KEY));
+  const startedAt = Date.now();
+  let response: HttpResponse;
+  try {
+    response = await transport(`${baseUrl}/models`, {
+      method: 'GET',
+      headers: authHeaders(apiKey),
+      dispatcher: dispatcherFor(proxy),
+    } as Parameters<Transport>[1]);
+  } catch (error) {
+    const described = describeFailure(failure('connect', error, startedAt, proxy), t);
+    return { summary: t('probe.failed'), detail: `${t('probe.failed.detail')}\n\n${described}` };
+  }
+  const ms = Date.now() - startedAt;
+  if (response.ok) {
+    return { summary: t('probe.ok', { ms }), detail: t('probe.ok.detail', { baseUrl, ms }) };
+  }
+  if (response.status === 401 || response.status === 403) {
+    // The transport is fine; the credentials are the problem.
+    return {
+      summary: t('probe.auth', { status: response.status }),
+      detail: t('probe.auth.detail', { status: response.status, baseUrl }),
+    };
+  }
+  const message = await readErrorMessage(response, startedAt, proxy);
+  return { summary: t('probe.http', { status: response.status }), detail: t('probe.http.detail', { message, ms }) };
+}
+
+async function withHeartbeat<T>(
+  work: (started: () => void) => Promise<T>,
+  progress: finch.ToolProgress,
+  stage: string,
+  baseMessage: string,
+  options: { resolution?: [number, number]; intervalMs?: number } = {},
+): Promise<T> {
+  const startedAt = Date.now();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const report = (message: string): void => {
+    progress.report({
+      stage,
+      message,
+      kind: 'image',
+      ...(options.resolution ? { image: { resolution: options.resolution } } : {}),
+    });
+  };
+  const started = (): void => {
+    if (timer) return;
+    report(baseMessage);
+    timer = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      report(`${baseMessage} (${elapsed}s elapsed)`);
+    }, options.intervalMs ?? 4000);
+  };
+  try {
+    return await work(started);
+  } finally {
+    if (timer) clearInterval(timer);
+  }
+}
+
+/** `auto` leaves the size to the model, so only an explicit size has a badge. */
+function sizeResolution(size: string): [number, number] | undefined {
+  const match = /^(\d{1,4})x(\d{1,4})$/.exec(size.trim());
+  return match ? [Number(match[1]), Number(match[2])] : undefined;
+}
+
+// ── gallery ──────────────────────────────────────────────────────────────────
+
+const GALLERY_FILE = 'gallery.json';
+const GALLERY_LIMIT = 2000;
+/** Above this we refuse to ship bytes across the panel bridge. */
+const MAX_EMBED_BYTES = 12 * 1024 * 1024;
+/**
+ * The grid never needs a 4K original: the page renders each card from a small
+ * thumbnail it produced itself (it is the only side with an image decoder) and
+ * asks us to keep it, so a gallery that has been looked at once opens instantly.
+ */
+const THUMB_DIR = 'thumbs';
+const MAX_THUMB_BYTES = 400 * 1024;
+/**
+ * The marked preview is drawn in the page, so it has no file until the page
+ * hands us the bytes. One snapshot per content — never one mutable file per
+ * record: an inserted reference must keep the marks it was inserted with even
+ * after the editor clears them or the user draws something new.
+ */
+const ANNOTATED_DIR = 'annotated';
+const MAX_ANNOTATED_BYTES = 12 * 1024 * 1024;
+/** Snapshots kept per image; older ones are pruned as new ones arrive. */
+const ANNOTATED_KEEP = 3;
+const currentThumbs = new Map<string, string>();
+
+/** Thumbnails live beside the gallery index, keyed by the original path. */
+function thumbFile(ctx: finch.MiniToolContext, filePath: string): string {
+  const key = createHash('sha1').update(filePath).digest('hex').slice(0, 20);
+  return path.join(ctx.storagePath, THUMB_DIR, `${key}.webp`);
+}
+
+/** Keep only the newest preview snapshots of one image, so disk use stays flat. */
+async function pruneAnnotated(dir: string, owner: string): Promise<void> {
+  const names = await fs.readdir(dir).catch(() => [] as string[]);
+  const mine = names.filter((name) => name.startsWith(`${owner}-`) && name.endsWith('.png'));
+  if (mine.length <= ANNOTATED_KEEP) return;
+  const stamped = await Promise.all(mine.map(async (name) => ({ name, at: (await fs.stat(path.join(dir, name))).mtimeMs })));
+  stamped.sort((a, b) => b.at - a.at);
+  await Promise.all(stamped.slice(ANNOTATED_KEEP).map((entry) => fs.rm(path.join(dir, entry.name), { force: true })));
+}
+
+export interface GalleryRecord {
+  id: string;
+  filePath: string;
+  name: string;
+  prompt: string;
+  model: string;
+  /** What was requested (`auto` or `WxH`); `width`/`height` are what came back. */
+  size: string;
+  quality: string;
+  format: string;
+  width: number;
+  height: number;
+  bytes: number;
+  createdAt: number;
+  sessionId: string;
+  spaceId: string;
+  references: string[];
+  masked: boolean;
+  /** Free-form user note, edited from the gallery page. */
+  note: string;
+  annotations?: GalleryAnnotations;
+  /**
+   * Session created for "send to a new chat" from the App View, which has no
+   * Composer to attach into. Reused across sends for the same image.
+   */
+  annotationSessionId?: string;
+}
+
+async function loadGallery(ctx: finch.MiniToolContext): Promise<GalleryRecord[]> {
+  try {
+    const raw = await fs.readFile(path.join(ctx.storagePath, GALLERY_FILE), 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as GalleryRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveGallery(ctx: finch.MiniToolContext, records: GalleryRecord[]): Promise<void> {
+  const file = path.join(ctx.storagePath, GALLERY_FILE);
+  const tmp = `${file}.tmp`;
+  await fs.mkdir(ctx.storagePath, { recursive: true });
+  await fs.writeFile(tmp, JSON.stringify(records), 'utf8');
+  await fs.rename(tmp, file);
+}
+
+/** Serialize read-modify-write transactions, not just the final rename: an
+ * autosave and a generation must never overwrite each other's gallery data. */
+const galleryWrites = new WeakMap<finch.MiniToolContext, Promise<void>>();
+function mutateGallery(ctx: finch.MiniToolContext, mutate: (records: GalleryRecord[]) => GalleryRecord[]): Promise<void> {
+  const next = (galleryWrites.get(ctx) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    await saveGallery(ctx, mutate(await loadGallery(ctx)));
+  });
+  galleryWrites.set(ctx, next);
+  return next;
+}
+
+/** Newest first, capped — a lost record never loses the image file itself. */
+async function addToGallery(ctx: finch.MiniToolContext, records: GalleryRecord[]): Promise<void> {
+  await mutateGallery(ctx, (existing) => [...records, ...existing].slice(0, GALLERY_LIMIT));
+}
+
+/**
+ * Read real pixel dimensions straight out of the file header. The gallery lays
+ * out a masonry column from the aspect ratio, so it needs the numbers before
+ * the picture has loaded — and `size: auto` means the request never told us.
+ */
+export function readImageSize(buf: Buffer, format: string): { width: number; height: number } {
+  // Callers pass the saved extension, so "jpg" has to reach the same branch as
+  // "jpeg" — a JPEG used to come back as 0x0 and lose its aspect ratio.
+  const kind = format.toLowerCase().replace(/^\./, '');
+  const isJpeg = kind === 'jpg' || kind === 'jpeg' || kind === 'jpe';
+  try {
+    if (kind === 'png' && buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47) {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+    if (isJpeg && buf.length > 16 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let off = 2;
+      while (off + 9 < buf.length) {
+        if (buf[off] !== 0xff) {
+          off += 1;
+          continue;
+        }
+        const marker = buf[off + 1];
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { width: buf.readUInt16BE(off + 7), height: buf.readUInt16BE(off + 5) };
+        }
+        off += 2 + buf.readUInt16BE(off + 2);
+      }
+    }
+    if (kind === 'webp' && buf.length > 30 && buf.toString('ascii', 0, 4) === 'RIFF') {
+      const tag = buf.toString('ascii', 8, 12);
+      if (tag === 'VP8X') {
+        return {
+          width: 1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16)),
+          height: 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16)),
+        };
+      }
+      if (tag === 'VP8 ') {
+        return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+      }
+      if (tag === 'VP8L') {
+        const bits = buf.readUInt32LE(17);
+        return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+      }
+    }
+    if (kind === 'gif' && buf.length > 10 && buf.toString('ascii', 0, 3) === 'GIF') {
+      // The logical screen descriptor is fixed-width little endian.
+      return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+    }
+    if (kind === 'svg') {
+      const head = buf.toString('utf8', 0, Math.min(buf.length, 4096));
+      const svgTag = head.match(/<svg\b[^>]*>/i)?.[0] ?? '';
+      const attr = (name: string): number => {
+        const raw = svgTag.match(new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`, 'i'))?.[1] ?? '';
+        const value = Number.parseFloat(raw);
+        return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+      };
+      const width = attr('width');
+      const height = attr('height');
+      if (width && height) return { width, height };
+      const viewBox = (svgTag.match(/viewBox\s*=\s*["']([^"']+)["']/i)?.[1] ?? '').trim().split(/[\s,]+/);
+      const boxWidth = Number.parseFloat(viewBox[2] ?? '');
+      const boxHeight = Number.parseFloat(viewBox[3] ?? '');
+      if (Number.isFinite(boxWidth) && Number.isFinite(boxHeight) && boxWidth > 0 && boxHeight > 0) {
+        return { width: Math.round(boxWidth), height: Math.round(boxHeight) };
+      }
+    }
+  } catch {
+    // fall through — an unknown size just means the card sizes itself on load
+  }
+  return { width: 0, height: 0 };
+}
+
+const livePanels = new Set<finch.AppPanel>();
+let composerMenu: (finch.Disposable & { notifyUpdate(): void }) | undefined;
+
+/** Sessions are only reachable when the host exposes them and the permission is granted. */
+function sessionsSupported(ctx: finch.MiniToolContext): boolean {
+  try {
+    return ctx.api.supports('sessions.create') && ctx.api.supports('sessions.send');
+  } catch {
+    return false;
+  }
+}
+
+/** Writes the Composer menu's default size: the one place that stores it. */
+async function storeDefaultSize(ctx: finch.MiniToolContext, size: string): Promise<string | null> {
+  const check = checkSize(size);
+  if (!check.ok) return null;
+  if (check.size === DEFAULT_SIZE) await ctx.storage.delete(SIZE_STORAGE_KEY);
+  else await ctx.storage.set(SIZE_STORAGE_KEY, check.size);
+  return check.size;
+}
+
+/**
+ * The App View owns no Composer draft, so an edited image cannot be `addContexts`-ed
+ * there. Instead the composed preview is sent into a Session this mini tool owns.
+ * Reusing one Session per image keeps repeated edits in the same conversation.
+ */
+async function resolveAnnotationSession(ctx: finch.MiniToolContext, record: GalleryRecord): Promise<string> {
+  if (record.annotationSessionId) {
+    const existing = await ctx.sessions.get(record.annotationSessionId).catch(() => undefined);
+    if (existing) return existing.sessionId;
+    record.annotationSessionId = undefined;
+  }
+  const created = await ctx.sessions.create({});
+  const sessionId = created.sessionId;
+  record.annotationSessionId = sessionId;
+  await mutateGallery(ctx, (records) => {
+    const target = records.find((item) => item.id === record.id);
+    if (target) target.annotationSessionId = sessionId;
+    return records;
+  });
+  return sessionId;
+}
+
+async function buildPanelEnv(ctx: finch.MiniToolContext, panel: finch.AppPanel): Promise<Record<string, unknown>> {
+  return {
+    view: panel.view ?? '',
+    sessionId: panel.sessionId ?? '',
+    // Fallback for older hosts; the page prefers repeatable finch:env signals.
+    locale: ctx.i18n.locale,
+    canSend: sessionsSupported(ctx),
+  };
+}
+
+async function sendGallery(ctx: finch.MiniToolContext, panel: finch.AppPanel): Promise<void> {
+  await panel.postMessage({
+    type: 'gallery',
+    data: await loadGallery(ctx),
+    env: await buildPanelEnv(ctx, panel),
+  });
+}
+
+async function broadcastGallery(ctx: finch.MiniToolContext): Promise<void> {
+  if (!livePanels.size) return;
+  const data = await loadGallery(ctx);
+  for (const panel of livePanels) {
+    try {
+      await panel.postMessage({ type: 'gallery', data });
+    } catch {
+      // Navigation is transient. Only onDidDispose removes a panel handle.
+    }
+  }
+}
+
+/** Per-message attachment budget, mirrored from the host's documented limits. */
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACH_TOTAL_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Sends the marked preview plus the untouched original into a Session, so an
+ * App View edit can actually reach the model. The original is read from disk
+ * here — the page already shipped the preview bytes and should not resend a
+ * second copy of a possibly large file. The original is dropped, not the send
+ * itself, when the two would exceed the host's attachment budget.
+ */
+async function sendAnnotationsToSession(
+  ctx: finch.MiniToolContext,
+  record: GalleryRecord,
+  evidence: string,
+  text: string,
+  idempotencyKey: string,
+): Promise<{ sessionId?: string; error?: string; attached: number; includedOriginal: boolean }> {
+  const attachments: finch.SessionMessageAttachment[] = [];
+  let total = 0;
+  const attach = (name: string, mimeType: string, data: string): boolean => {
+    const bytes = Math.floor((data.length * 3) / 4);
+    if (attachments.length >= MAX_ATTACHMENTS || total + bytes > MAX_ATTACH_TOTAL_BYTES) return false;
+    attachments.push({ name, mimeType, data, kind: 'image' });
+    total += bytes;
+    return true;
+  };
+
+  let includedOriginal = false;
+  // Original first: it is the image to edit, the preview is only the markup.
+  const rawOriginal = await fs.readFile(record.filePath).catch(() => null);
+  if (rawOriginal) includedOriginal = attach(record.name, imageMime(record.filePath), rawOriginal.toString('base64'));
+  const evidenceName = `${record.name.replace(/\.[^.]+$/, '')}-annotated.png`;
+  if (evidence && !attach(evidenceName, 'image/png', evidence)) {
+    return { error: 'too-large', attached: attachments.length, includedOriginal };
+  }
+  if (!attachments.length) return { error: 'empty', attached: 0, includedOriginal };
+
+  const sessionId = await resolveAnnotationSession(ctx, record);
+  const receipt = await ctx.sessions.send(sessionId, { text, attachments, idempotencyKey });
+  // A replayed receipt means the host already queued this exact message; do not
+  // pretend a new turn started.
+  if (receipt.state !== 'accepted') return { sessionId, error: 'duplicate', attached: attachments.length, includedOriginal };
+  return { sessionId, attached: attachments.length, includedOriginal };
+}
+
+function imageMime(filePath: string): string {
+  return mimeForPath(filePath);
+}
+
+async function handlePanelMessage(
+  ctx: finch.MiniToolContext,
+  panel: finch.AppPanel,
+  msg: Record<string, unknown>,
+): Promise<void> {
+  const type = String(msg?.type ?? '');
+
+  if (type === 'requestGallery') {
+    await sendGallery(ctx, panel);
+    return;
+  }
+
+  if (type === 'requestImage') {
+    const filePath = typeof msg.filePath === 'string' ? msg.filePath : '';
+    const wantThumb = msg.variant === 'thumb';
+    if (!filePath) return;
+    try {
+      const records = await loadGallery(ctx);
+      if (!records.some((record) => record.filePath === filePath)) {
+        await panel.postMessage({ type: 'imageData', filePath, error: 'unreadable' });
+        return;
+      }
+      if (wantThumb) {
+        // A grid-sized copy, when one has been made. Otherwise the page gets the
+        // original, renders it, and sends back a thumbnail for next time.
+        const thumb = await fs.readFile(thumbFile(ctx, filePath)).catch(() => null);
+        if (thumb && thumb.length > 64 && thumb.length <= MAX_THUMB_BYTES) {
+          await panel.postMessage({
+            type: 'imageData',
+            filePath,
+            variant: 'thumb',
+            dataUrl: `data:image/webp;base64,${thumb.toString('base64')}`,
+          });
+          return;
+        }
+      }
+      const info = await fs.stat(filePath);
+      if (info.size > MAX_EMBED_BYTES) {
+        await panel.postMessage({ type: 'imageData', filePath, error: 'too-large' });
+        return;
+      }
+      const buf = await fs.readFile(filePath);
+      await panel.postMessage({
+        type: 'imageData',
+        filePath,
+        variant: 'full',
+        dataUrl: `data:${imageMime(filePath)};base64,${buf.toString('base64')}`,
+      });
+    } catch {
+      await panel.postMessage({ type: 'imageData', filePath, error: 'unreadable' });
+    }
+    return;
+  }
+
+  if (type === 'saveThumb') {
+    // The page is the only side that can resize, so it hands us the result. Only
+    // a picture this gallery actually knows is accepted, and only small ones.
+    const filePath = typeof msg.filePath === 'string' ? msg.filePath : '';
+    const dataUrl = typeof msg.dataUrl === 'string' ? msg.dataUrl : '';
+    const encoded = /^data:image\/webp;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+    if (!filePath || !encoded) return;
+    const records = await loadGallery(ctx);
+    if (!records.some((record) => record.filePath === filePath)) return;
+    const buf = Buffer.from(encoded[1], 'base64');
+    if (buf.length < 64 || buf.length > MAX_THUMB_BYTES) return;
+    const target = thumbFile(ctx, filePath);
+    const cached = currentThumbs.get(target);
+    if (cached === encoded[1]) return;
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const tmp = `${target}.tmp`;
+    await fs.writeFile(tmp, buf);
+    await fs.rename(tmp, target);
+    currentThumbs.set(target, encoded[1]);
+    return;
+  }
+
+  if (type === 'saveAnnotated') {
+    const id = typeof msg.id === 'string' ? msg.id : '';
+    const content = typeof msg.content === 'string' ? msg.content : '';
+    if (!id || !/^[A-Za-z0-9+/=]+$/.test(content)) return;
+    const records = await loadGallery(ctx);
+    if (!records.some((record) => record.id === id)) return;
+    const buf = Buffer.from(content, 'base64');
+    if (buf.length < 64 || buf.length > MAX_ANNOTATED_BYTES) {
+      await panel.postMessage({ type: 'annotatedSaved', id, error: 'too-large' });
+      return;
+    }
+    const dir = path.join(ctx.storagePath, ANNOTATED_DIR);
+    await fs.mkdir(dir, { recursive: true });
+    // Content-addressed snapshot: identical bytes reuse a file, different bytes
+    // get their own, so an already-inserted reference never loses its marks.
+    const owner = createHash('sha1').update(id).digest('hex').slice(0, 20);
+    const stamp = createHash('sha1').update(content).digest('hex').slice(0, 12);
+    const target = path.join(dir, `${owner}-${stamp}.png`);
+    if (!existsSync(target)) {
+      const tmp = `${target}.tmp`;
+      await fs.writeFile(tmp, buf);
+      await fs.rename(tmp, target);
+      await pruneAnnotated(dir, owner);
+    }
+    await panel.postMessage({ type: 'annotatedSaved', id, path: target });
+    return;
+  }
+
+  if (type === 'openPreview') {
+    const filePath = typeof msg.filePath === 'string' ? msg.filePath : '';
+    if (!filePath) return;
+    try {
+      await ctx.ui.openFilePreview(filePath);
+    } catch (err) {
+      ctx.logger.warn(`openFilePreview failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+
+  if (type === 'saveNote') {
+    const id = String(msg.id ?? '');
+    const note = typeof msg.note === 'string' ? msg.note : '';
+    await mutateGallery(ctx, (records) => {
+      const record = records.find((item) => item.id === id);
+      if (record) record.note = note.slice(0, 8000);
+      return records;
+    });
+    await panel.postMessage({ type: 'noteSaved', id });
+    return;
+  }
+
+  if (type === 'saveAnnotations') {
+    const id = String(msg.id ?? '');
+    const annotations = parseAnnotations(msg.annotations);
+    if (!annotations) {
+      await panel.postMessage({ type: 'panelError', id, requestId: msg.requestId, error: 'invalid-annotations' });
+      return;
+    }
+    let found = false;
+    await mutateGallery(ctx, (records) => {
+      const record = records.find((item) => item.id === id);
+      if (record) {
+        found = true;
+        record.annotations = annotations;
+        record.note = typeof msg.note === 'string' ? msg.note.slice(0, 8000) : record.note;
+      }
+      return records;
+    });
+    await panel.postMessage({ type: found ? 'annotationsSaved' : 'panelError', id, requestId: msg.requestId, ...(!found ? { error: 'not-found' } : {}) });
+    return;
+  }
+
+  if (type === 'sendToSession') {
+    const id = String(msg.id ?? '');
+    const requestId = String(msg.requestId ?? '');
+    const records = await loadGallery(ctx);
+    const record = records.find((item) => item.id === id);
+    const reply = (payload: Record<string, unknown>) =>
+      panel.postMessage({ type: 'annotationSendResult', id, requestId, ...payload });
+    if (!record) {
+      await reply({ error: 'not-found' });
+      return;
+    }
+    if (!sessionsSupported(ctx)) {
+      await reply({ error: 'unsupported' });
+      return;
+    }
+    const evidence = typeof msg.evidence === 'string' ? msg.evidence : '';
+    const text = typeof msg.text === 'string' ? msg.text.slice(0, 8000) : '';
+    // A fresh key per attempt: a replayed idempotency key would suppress the turn.
+    const idempotencyKey =
+      typeof msg.idempotencyKey === 'string' && msg.idempotencyKey
+        ? msg.idempotencyKey.slice(0, 200)
+        : `${record.id}-${Date.now()}`;
+    const result = await sendAnnotationsToSession(ctx, record, evidence, text, idempotencyKey).catch((error: unknown) => {
+      ctx.logger.warn(`sendToSession failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { sessionId: undefined, error: 'send-failed', attached: 0, includedOriginal: false };
+    });
+    // 'duplicate' still means the host queued this exact message, so it is worth
+    // opening the Session; the other errors never delivered anything.
+    if (result.sessionId && (result.error === undefined || result.error === 'duplicate')) {
+      try {
+        await ctx.navigation.openSession(result.sessionId);
+      } catch (err) {
+        ctx.logger.warn(`openSession failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    await reply(result);
+    return;
+  }
+
+  if (type === 'adjustImage') {
+    const id = String(msg.id ?? '');
+    const records = await loadGallery(ctx);
+    const record = records.find((item) => item.id === id);
+    if (!record) {
+      await panel.postMessage({ type: 'adjustResult', id, error: 'not-found' });
+      return;
+    }
+    if (!record.sessionId) {
+      await panel.postMessage({ type: 'adjustResult', id, error: 'no-session' });
+      return;
+    }
+    try {
+      await ctx.navigation.openSession(record.sessionId);
+    } catch (err) {
+      ctx.logger.warn(`openSession failed: ${err instanceof Error ? err.message : String(err)}`);
+      await panel.postMessage({ type: 'adjustResult', id, error: 'open-failed' });
+      return;
+    }
+    // The image is edited where it can be delivered: a gallery panel already
+    // open in that Session is revealed and dropped straight into the editor.
+    for (const target of livePanels) {
+      if (target === panel || target.view !== 'session' || target.sessionId !== record.sessionId) continue;
+      try {
+        await target.reveal();
+        await target.postMessage({ type: 'editImage', id });
+      } catch (err) {
+        ctx.logger.warn(`editImage push failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    await panel.postMessage({ type: 'adjustResult', id, sessionId: record.sessionId });
+    return;
+  }
+
+  if (type === 'deleteRecord') {
+    const id = String(msg.id ?? '');
+    const deleteFile = msg.deleteFile === true;
+    let target: GalleryRecord | undefined;
+    await mutateGallery(ctx, (records) => {
+      target = records.find((item) => item.id === id);
+      return records.filter((item) => item.id !== id);
+    });
+    if (!target) return;
+    let fileDeleteError = '';
+    if (deleteFile) {
+      await fs.rm(target.filePath, { force: true }).catch((err: unknown) => {
+        fileDeleteError = err instanceof Error ? err.message : String(err);
+      });
+    }
+    // The record is gone for good, so its cached thumbnail is dead weight.
+    const thumb = thumbFile(ctx, target.filePath);
+    await fs.rm(thumb, { force: true }).catch(() => {});
+    currentThumbs.delete(thumb);
+    await panel.postMessage({ type: 'deleteResult', id, deleteFile, fileDeleteError });
+    await broadcastGallery(ctx);
+    return;
+  }
+}
+
+// ── tool input ───────────────────────────────────────────────────────────────
+
+interface CreateImageInput {
+  prompt: string;
+  reference_image_paths?: string[];
+  mask_path?: string;
+  markup_path?: string;
+  size?: string;
+  quality?: string;
+  complexity?: string;
+  background?: string;
+  output_format?: string;
+  output_compression?: number;
+  /** GIF only: 2–16 frames (default 9) and their delay in ms (default 200). */
+  frame_count?: number;
+  frame_duration_ms?: number;
+  /** SVG only: which model authors the vector, and its reasoning effort. */
+  svg_model?: string;
+  svg_effort?: string;
+  moderation?: string;
+  n?: number;
+  partial_images?: number;
+  model?: string;
+  output_name?: string;
+  base_url?: string;
+  safety_identifier?: string;
+}
+
+/**
+ * Register every shipped SVG under the pack the manifest reserves. The bundle
+ * lives in `dist/`, so the assets sit one level up — the same layout the
+ * package ships. A missing file costs one icon, never the whole activation.
+ */
+export function registerIcons(ctx: finch.MiniToolContext): number {
+  const directory = fileURLToPath(new URL('../icons/', import.meta.url));
+  const entries: Record<string, { svg: string }> = {};
+  for (const name of ICON_FILES) {
+    try {
+      entries[name] = { svg: readFileSync(path.join(directory, `${name}.svg`), 'utf8') };
+    } catch (err) {
+      ctx.logger.warn(`icon "${name}" could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const count = Object.keys(entries).length;
+  if (count) ctx.subscriptions.push(ctx.icons.register(ICON_PACK_ID, entries));
+  return count;
+}
+
 export function activate(ctx: finch.MiniToolContext): void {
+  const t = (key: string, values?: Record<string, string | number>) => ctx.i18n.t(key, values);
+
+  registerIcons(ctx);
+
   ctx.subscriptions.push(
     ctx.tools.register({
       name: 'image_gen_create',
-      title: 'Generate Image (OpenAI)',
-      description: `Generate an image with OpenAI's image API, or edit/remix one using reference images.
-- Text-to-image: pass only "prompt".
-- Image-to-image (reference-guided generation/editing): also pass "reference_image_paths" with one or more local absolute image file paths; the model uses them as visual reference while following "prompt".
-Generated images are saved to local files; the tool result returns their absolute paths. Use wechat_send or Session attach afterward to show/share the images — do not try to re-download or re-encode them yourself.
-size controls aspect ratio/resolution: 1024x1024 (square), 1024x1536 (portrait), 1536x1024 (landscape), or auto (let the model choose).
-Requests go to the OpenAI-compatible endpoint configured via the Image Gen settings button in the Composer toolbar (default api.openai.com); pass base_url to override it for a single call only.`,
+      title: t('tool.title'),
+      description: t('tool.description'),
       inputSchema: {
         type: 'object',
         properties: {
           prompt: {
             type: 'string',
-            description: 'What to generate or how to edit the reference image(s). Be specific about subject, style, composition and mood.',
+            description:
+              'What to generate, or how to edit the reference image(s). Be specific about subject, style, composition, lighting and mood.',
           },
           reference_image_paths: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Local absolute file paths of reference image(s) for image-to-image / reference-guided editing. Omit for plain text-to-image.',
+            description:
+              'Local absolute file paths of reference image(s) for image-to-image / reference-guided editing or compositing. Omit for plain text-to-image. The API accepts up to 16 reference images.',
+          },
+          mask_path: {
+            type: 'string',
+            description:
+              'Optional local absolute path to a mask PNG marking the area to edit. Must have the same format and size as the reference image. Requires reference_image_paths. Cannot be combined with markup_path.',
+          },
+          markup_path: {
+            type: 'string',
+            description:
+              'Optional local absolute path to a transparent PNG laid over the FIRST reference image as an editing guide (arrows, circles, text marks — documented for GPT Image 2.5, and passed through on other models). Must match that image\'s dimensions and contain transparent pixels. Requires reference_image_paths and cannot be combined with mask_path.',
           },
           size: {
             type: 'string',
-            enum: SIZE_ENUM as unknown as string[],
-            description: 'Output size/aspect ratio. Default "auto".',
+            description: `Output size. "auto" (default) or WIDTHxHEIGHT — popular: 1024x1024 (square), 1536x1024 (landscape), 1024x1536 (portrait), 2048x2048, 2048x1152, 2560x1440, 3840x2160. Custom sizes need multiples of 16, aspect ratio within 3:1, edges ≤3840px, total pixels 655360-8294400.`,
           },
           quality: {
             type: 'string',
             enum: QUALITY_ENUM as unknown as string[],
-            description: 'Rendering quality/cost tradeoff. Default "auto".',
+            description:
+              'Quality/cost tradeoff: low (fast drafts), medium, high, xhigh, max (GPT Image 2.5 and 2.6), or auto. Omit to use the configured default.',
+          },
+          complexity: {
+            type: 'string',
+            enum: COMPLEXITY_ENUM as unknown as string[],
+            description:
+              'How much planning the model spends on the image, independent of the rendering quality: low, medium, or high. Omit for the model default — since planning also costs time, only raise it when the composition really needs it.',
+          },
+          background: {
+            type: 'string',
+            enum: BACKGROUND_ENUM as unknown as string[],
+            description:
+              'auto (let the model decide, the default), opaque (a solid scene), or transparent (cut-out). Choose transparent whenever the user wants a sticker, logo, icon, cut-out product, avatar or anything that will be placed on another background — and then keep output_format on png or webp, the only two that carry transparency (jpeg/gif/svg are switched to png automatically and the result says so). Leave it unset for ordinary pictures, which should have their own background.',
+          },
+          output_format: {
+            type: 'string',
+            enum: FORMAT_ENUM as unknown as string[],
+            description:
+              'Pick by what the file is for, not by habit: png (default — lossless, supports transparency, largest), webp (transparency plus a much smaller file, best for web pages, apps and chat), jpeg (no transparency, smallest photographic file), gif (a short animation, 2-16 frames, Image 2.6), svg (a vector that scales to any size or gets edited as shapes, Image 2.6; prompt only, never with reference images). A cut-out needs png or webp; a photo meant to look right and stay small is jpeg; something that must print or scale is svg; motion is gif.',
+          },
+          output_compression: {
+            type: 'number',
+            minimum: 0,
+            maximum: 100,
+            description:
+              'Quality/size dial for jpeg and webp only (100 keeps the most quality, 60-80 is a good small-file default); ignored for png, gif and svg, whose sizes are set by size and quality instead.',
+          },
+          frame_count: {
+            type: 'number',
+            minimum: MIN_FRAMES,
+            maximum: MAX_FRAMES,
+            description: `GIF only: how many frames to animate, ${MIN_FRAMES}-${MAX_FRAMES} (default ${DEFAULT_FRAMES} when omitted). Omit for stills.`,
+          },
+          frame_duration_ms: {
+            type: 'number',
+            minimum: MIN_FRAME_MS,
+            maximum: MAX_FRAME_MS,
+            description: `GIF only: delay per frame in milliseconds (default ${DEFAULT_FRAME_MS}), rounded to the nearest 10 ms.`,
+          },
+          svg_model: {
+            type: 'string',
+            description:
+              'SVG only: the model that authors the vector, when your account has SVG model selection enabled. The top-level model still renders the reference image. Omit to let the endpoint choose.',
+          },
+          svg_effort: {
+            type: 'string',
+            enum: SVG_EFFORT_ENUM as unknown as string[],
+            description:
+              'SVG only: reasoning effort of the SVG author (none, minimal, low, medium, high, xhigh, max), independent of image quality. Needs svg_model.',
+          },
+          moderation: {
+            type: 'string',
+            enum: MODERATION_ENUM as unknown as string[],
+            description: 'auto (default, standard filtering) or low (less restrictive).',
           },
           n: {
             type: 'number',
             minimum: 1,
-            maximum: 4,
-            description: 'Number of images to generate, 1-4. Default 1.',
+            maximum: 10,
+            description: 'Number of images to generate, 1-10. Default 1.',
+          },
+          partial_images: {
+            type: 'number',
+            minimum: 0,
+            maximum: 3,
+            description:
+              'Stream 1-3 low-resolution previews while generating (single image only) so progress stays visible on slow, high-quality requests. Costs a little extra. Default 0 (off).',
           },
           model: {
             type: 'string',
-            description: `OpenAI image model id. Default "${DEFAULT_MODEL}".`,
+            description:
+              'Image model id, e.g. "gpt-image-2.6-flare" (fast everyday, default), "gpt-image-2.6-sunburst" (editing precision), "gpt-image-2.5-flare" / "gpt-image-2.5-sunburst" (previous generation), "gpt-image-2", "gpt-image-1.5". Shorthands "flare" / "sunburst" mean the current generation. Omit to use the configured default.',
           },
           output_name: {
             type: 'string',
@@ -230,14 +1520,18 @@ Requests go to the OpenAI-compatible endpoint configured via the Image Gen setti
           },
           base_url: {
             type: 'string',
-            description: `One-off override of the API base URL for this call only (e.g. a proxy/relay endpoint), without changing the saved default. Must include the protocol, e.g. "https://your-proxy.example.com/v1". Omit to use the endpoint configured via the Composer's Image Gen settings button (default "${DEFAULT_BASE_URL}").`,
+            description: `One-off override of the API base URL for this call only (e.g. a relay or mirror endpoint), without changing the saved default. Must include the protocol, e.g. "https://relay.example.com/v1". This is the API endpoint, not a network proxy — proxy settings live in the settings menu. Omit to use the saved default.`,
+          },
+          safety_identifier: {
+            type: 'string',
+            description:
+              'Optional stable, privacy-preserving id for the end user on whose behalf this runs (hash a username or email, never send the raw value; ≤128 chars). Helps OpenAI abuse detection.',
           },
         },
         required: ['prompt'],
       },
       risk: 'medium',
-      timeoutMs: 240000,
-      progressMode: 'indeterminate',
+      timeoutMs: 300000,
       async execute(rawInput: Record<string, unknown>, exec: finch.ToolExecutionContext) {
         const input = rawInput as unknown as CreateImageInput;
         const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
@@ -251,20 +1545,138 @@ Requests go to the OpenAI-compatible endpoint configured via the Image Gen setti
             content: [
               {
                 type: 'text',
-                text: 'OpenAI API key is not configured. Ask the user to click the Image Gen settings button (gear icon) in the Composer toolbar → "OpenAI API Key" to enter it, then retry.',
+                text: t('error.noKey'),
               },
             ],
             isError: true,
           };
         }
 
-        const model = (typeof input.model === 'string' && input.model.trim()) || DEFAULT_MODEL;
-        const size = SIZE_ENUM.includes(input.size as SizeOption) ? (input.size as SizeOption) : 'auto';
-        const quality = QUALITY_ENUM.includes(input.quality as QualityOption) ? (input.quality as QualityOption) : 'auto';
-        const n = clampN(input.n);
+        const storedModel = await ctx.storage.get<string>(MODEL_STORAGE_KEY);
+        let model = resolveModel(input.model, storedModel && storedModel.trim() ? storedModel.trim() : DEFAULT_MODEL);
+        const storedQuality = await ctx.storage.get<string>(QUALITY_STORAGE_KEY);
+        const quality = pickEnum(
+          input.quality,
+          QUALITY_ENUM,
+          storedQuality && QUALITY_ENUM.includes(storedQuality as QualityOption)
+            ? (storedQuality as QualityOption)
+            : (DEFAULT_QUALITY as QualityOption),
+        );
+
+        // A stored default size is only trusted if it still passes the same
+        // local rules a caller-supplied size has to pass.
+        const storedSize = await ctx.storage.get<string>(SIZE_STORAGE_KEY);
+        const sizeFallback = storedSize && checkSize(storedSize).ok ? storedSize.trim() : DEFAULT_SIZE;
+        const sizeCheck = checkSize(input.size, sizeFallback);
+        if (!sizeCheck.ok) {
+          return { content: [{ type: 'text', text: sizeCheck.error }], isError: true };
+        }
+        const size = sizeCheck.size;
+
         const refPaths = Array.isArray(input.reference_image_paths)
           ? input.reference_image_paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
           : [];
+        const maskPath = typeof input.mask_path === 'string' && input.mask_path.trim() ? input.mask_path.trim() : undefined;
+        const markupPath = typeof input.markup_path === 'string' && input.markup_path.trim() ? input.markup_path.trim() : undefined;
+        if (maskPath && !refPaths.length) {
+          return {
+            content: [{ type: 'text', text: 'mask_path needs reference_image_paths — a mask only applies to an image edit.' }],
+            isError: true,
+          };
+        }
+        // The docs put markup on the same footing as a mask: both modify the
+        // first input image, and they cannot be combined.
+        if (markupPath && !refPaths.length) {
+          return {
+            content: [{ type: 'text', text: 'markup_path needs reference_image_paths — markup is laid over the first input image.' }],
+            isError: true,
+          };
+        }
+        if (markupPath && maskPath) {
+          return {
+            content: [{ type: 'text', text: 'markup_path cannot be combined with mask_path — use one or the other.' }],
+            isError: true,
+          };
+        }
+        // The endpoint documents a hard ceiling for GPT image models; refusing
+        // here beats a request that only comes back as an opaque 400.
+        if (refPaths.length > MAX_REFERENCE_IMAGES) {
+          return {
+            content: [{ type: 'text', text: t('error.tooManyReferences', { max: String(MAX_REFERENCE_IMAGES) }) }],
+            isError: true,
+          };
+        }
+        // Inputs are raster only (png/jpeg/webp). Now that the tool can also
+        // produce GIF and SVG, those files are exactly what a user will try to
+        // feed back in, so say why instead of letting the API reject the upload.
+        const unfitInput = [...refPaths, ...(maskPath ? [maskPath] : []), ...(markupPath ? [markupPath] : [])].find(
+          (filePath) => !['.png', '.jpg', '.jpeg', '.webp'].includes(path.extname(filePath).toLowerCase()),
+        );
+        if (unfitInput) {
+          return {
+            content: [{ type: 'text', text: t('error.inputFormat', { file: path.basename(unfitInput) }) }],
+            isError: true,
+          };
+        }
+
+        const n = clampInt(input.n, 1, 10, 1);
+        const partialImages = clampInt(input.partial_images, 0, 3, 0);
+        const background = pickEnum(input.background, BACKGROUND_ENUM, 'auto' as BackgroundOption);
+        const requestedFormat = pickEnum(input.output_format, FORMAT_ENUM, 'png' as FormatOption);
+        /** Things the caller asked for that the API cannot do, reported in the result. */
+        const warnings: string[] = [];
+
+        // The documented limits of the two new formats, checked locally: each
+        // one would otherwise come back as an opaque 400.
+        if (requestedFormat === 'svg' && refPaths.length) {
+          return { content: [{ type: 'text', text: t('error.svgEdit') }], isError: true };
+        }
+        if (requestedFormat === 'svg' && n > 1) {
+          return { content: [{ type: 'text', text: t('error.svgSingle') }], isError: true };
+        }
+        if (requestedFormat === 'gif' && (maskPath || markupPath)) {
+          return { content: [{ type: 'text', text: t('error.gifMask') }], isError: true };
+        }
+
+        let format = requestedFormat;
+        // Transparency is a png/webp feature; anything else would silently lose it.
+        if (background === 'transparent' && format !== 'png' && format !== 'webp') {
+          warnings.push(t('warn.transparentFormat', { format }));
+          format = 'png';
+        }
+        if (format === 'gif' || format === 'svg') {
+          if (partialImages > 0) warnings.push(t('warn.streamUnsupported', { format }));
+          if (input.output_compression !== undefined) warnings.push(t('warn.compressionDropped', { format }));
+          // These two formats only exist on Image 2.6; sending them to an older
+          // family fails at the endpoint, so move to the sibling model instead.
+          if (needsImage26(model, format)) {
+            const upgraded = image26Sibling(model);
+            warnings.push(t('warn.formatNeeds26', { format, from: model, to: upgraded }));
+            model = upgraded;
+          }
+        }
+        // Only forward values the API documents: an unknown complexity is dropped
+        // rather than sent as a guess.
+        const rawComplexity = typeof input.complexity === 'string' ? input.complexity.trim().toLowerCase() : '';
+        const complexity = (COMPLEXITY_ENUM as readonly string[]).includes(rawComplexity) ? rawComplexity : '';
+        const compression = clampInt(input.output_compression, 0, 100, -1);
+        // GIF timing: 2–16 frames, delay rounded to the nearest 10 ms.
+        const frameCount = clampInt(input.frame_count, MIN_FRAMES, MAX_FRAMES, DEFAULT_FRAMES);
+        if (input.frame_count !== undefined && Number(input.frame_count) !== frameCount) {
+          warnings.push(t('warn.framesClamped', { requested: String(input.frame_count), used: String(frameCount) }));
+        }
+        const rawFrameMs = clampInt(input.frame_duration_ms, MIN_FRAME_MS, MAX_FRAME_MS, DEFAULT_FRAME_MS);
+        const frameDuration = Math.min(MAX_FRAME_MS, Math.max(MIN_FRAME_MS, Math.round(rawFrameMs / 10) * 10));
+        // The SVG author is a separate selection: without a model id we must omit
+        // the whole object, so an effort alone is not enough to send anything.
+        const svgModel = typeof input.svg_model === 'string' ? input.svg_model.trim().slice(0, 120) : '';
+        const rawSvgEffort = typeof input.svg_effort === 'string' ? input.svg_effort.trim().toLowerCase() : '';
+        const svgEffort = (SVG_EFFORT_ENUM as readonly string[]).includes(rawSvgEffort) ? rawSvgEffort : '';
+        if (svgModel && format !== 'svg') warnings.push(t('warn.svgIgnored'));
+        if (format === 'svg' && svgEffort && !svgModel) warnings.push(t('warn.svgEffortNeedsModel'));
+        const moderation = pickEnum(input.moderation, MODERATION_ENUM, 'auto');
+        const safetyIdentifier =
+          typeof input.safety_identifier === 'string' ? input.safety_identifier.trim().slice(0, 128) : '';
         const namePrefix = sanitizeName(input.output_name || 'image-gen') || 'image-gen';
 
         let baseUrl = DEFAULT_BASE_URL;
@@ -278,87 +1690,303 @@ Requests go to the OpenAI-compatible endpoint configured via the Image Gen setti
           if (configured && configured.trim()) baseUrl = normalizeBaseUrl(configured);
         }
 
+        // Proxy: the saved value wins, otherwise the environment the host was
+        // started with. A user behind Clash/V2Ray cannot reach OpenAI directly.
+        const proxy = resolveProxy(await ctx.storage.get<string>(PROXY_STORAGE_KEY));
+
+        // Only forward optional knobs the caller actually asked for: relays and
+        // older models reject parameters they do not implement.
+        const optional: Record<string, unknown> = {};
+        if (input.background !== undefined && background !== 'auto') optional.background = background;
+        if (input.output_format !== undefined) optional.output_format = format;
+        if (compression >= 0 && (format === 'jpeg' || format === 'webp')) optional.output_compression = compression;
+        // GIF-only knobs stay omitted for every other format: a relay or an older
+        // model rejects parameters it does not implement.
+        if (format === 'gif') {
+          if (input.frame_count !== undefined) optional.frame_count = frameCount;
+          if (input.frame_duration_ms !== undefined) optional.frame_duration_ms = frameDuration;
+        }
+        if (format === 'svg' && svgModel) {
+          optional.svg = { model: svgModel, ...(svgEffort ? { reasoning: { effort: svgEffort } } : {}) };
+        }
+        if (input.moderation !== undefined && moderation !== 'auto') optional.moderation = moderation;
+        if (complexity) optional.complexity = complexity;
+        if (safetyIdentifier) optional.safety_identifier = safetyIdentifier;
+
         try {
-          for (const refPath of refPaths) {
-            await fs.access(refPath);
-          }
+          for (const refPath of refPaths) await fs.access(refPath);
+          if (maskPath) await fs.access(maskPath);
+          if (markupPath) await fs.access(markupPath);
 
           const stage = refPaths.length ? 'editing' : 'generating';
-          const baseMessage = refPaths.length ? 'Generating image from reference…' : 'Generating image…';
+          const baseMessage = refPaths.length ? t('progress.editing') : t('progress.generating');
+          const resolution = sizeResolution(size);
+          const outDir = path.join(ctx.storagePath, 'images');
+          const previewDir = path.join(outDir, '.preview');
+          const stream = partialImages > 0 && n === 1 && !refPaths.length && format !== 'gif' && format !== 'svg';
+
           const result = await withHeartbeat(
-            refPaths.length
-              ? callEdit(baseUrl, apiKey, { model, prompt, size, quality, n: String(n) }, refPaths, exec.signal)
-              : callGenerate(baseUrl, apiKey, { model, prompt, size, quality, n }, exec.signal),
+            (started) =>
+              refPaths.length
+                ? callEdit(
+                    baseUrl,
+                    apiKey,
+                    proxy,
+                    { model, prompt, size, quality, n: String(n), ...optional },
+                    refPaths,
+                    maskPath,
+                    markupPath,
+                    exec.signal,
+                    started,
+                  )
+                : stream
+                  ? callGenerateStreaming(
+                      baseUrl,
+                      apiKey,
+                      proxy,
+                      { model, prompt, size, quality, n, partial_images: partialImages, ...optional },
+                      exec.signal,
+                      async (index, buf) => {
+                        const previewPath = path.join(previewDir, `${namePrefix}-preview-${index}.png`);
+                        await fs.mkdir(previewDir, { recursive: true });
+                        await fs.writeFile(previewPath, buf);
+                        exec.progress.report({
+                          stage,
+                          message: t('progress.preview', { index: String(index), total: String(partialImages) }),
+                          kind: 'image',
+                          ...(resolution ? { image: { resolution } } : {}),
+                        });
+                      },
+                      started,
+                    )
+                  : callGenerate(baseUrl, apiKey, proxy, { model, prompt, size, quality, n, ...optional }, exec.signal, started),
             exec.progress,
             stage,
             baseMessage,
+            { resolution },
           );
 
           const items = result.data ?? [];
           if (!items.length) {
-            return { content: [{ type: 'text', text: 'OpenAI returned no image data.' }], isError: true };
+            return { content: [{ type: 'text', text: t('error.noImage') }], isError: true };
           }
 
-          exec.progress.report({ stage: 'saving', message: 'Saving image(s) locally…' });
-          const outDir = path.join(ctx.storagePath, 'images');
-          const savedPaths = await saveImages(items, outDir, namePrefix);
+          exec.progress.report({ stage: 'saving', message: t('progress.saving') });
+          const saved = await saveImages(items, outDir, namePrefix, EXT_BY_FORMAT[format], proxy);
+          const savedPaths = saved.map((item) => item.filePath);
+          if (stream) await fs.rm(previewDir, { recursive: true, force: true });
 
+          // Everything the gallery badge and a later "edit this again" need has
+          // to be captured here — the file alone cannot tell you what produced it.
+          const createdAt = Date.now();
+          await addToGallery(
+            ctx,
+            saved.map((item, index) => ({
+              id: `${createdAt}-${index + 1}`,
+              filePath: item.filePath,
+              name: path.basename(item.filePath),
+              prompt,
+              model,
+              size,
+              quality,
+              format,
+              width: item.width,
+              height: item.height,
+              bytes: item.bytes,
+              createdAt,
+              sessionId: exec.sessionId ?? '',
+              spaceId: exec.spaceId ?? '',
+              references: refPaths,
+              masked: !!maskPath,
+              note: '',
+            })),
+          );
+          await broadcastGallery(ctx);
+
+          const notes = [
+            `model: ${model}`,
+            `size: ${size}`,
+            `quality: ${quality}`,
+            `format: ${format}`,
+            ...(background !== 'auto' ? [`background: ${background}`] : []),
+            ...(moderation !== 'auto' ? [`moderation: ${moderation}`] : []),
+            ...(refPaths.length ? [`references: ${refPaths.length}`] : []),
+            ...(maskPath ? ['masked: yes'] : []),
+            ...(markupPath ? ['markup: yes'] : []),
+            ...(complexity ? [`complexity: ${complexity}`] : []),
+            ...(format === 'gif' ? [`frames: ${frameCount} × ${frameDuration}ms`] : []),
+            ...(format === 'svg' && svgModel ? [`svg author: ${svgModel}${svgEffort ? ` / ${svgEffort}` : ''}`] : []),
+          ];
           const lines = [
-            `Generated ${savedPaths.length} image(s) with model "${model}" (size: ${size}, quality: ${quality})${refPaths.length ? ` from ${refPaths.length} reference image(s)` : ''} via ${baseUrl}.`,
+            `${t('result.generated', { count: String(savedPaths.length) })} via ${baseUrl}.`,
+            `> ${notes.join(' · ')}`,
+            ...(result.fromPartial ? [`! ${t('result.fromPartial')}`] : []),
+            ...warnings.map((warning) => `! ${warning}`),
             ...savedPaths,
           ];
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          ctx.logger.error(`image_gen_create failed: ${message}`);
-          return { content: [{ type: 'text', text: `Image generation failed: ${message}` }], isError: true };
+          // Keep the whole story: a bare "fetch failed" told nobody whether it
+          // was DNS, a proxy, TLS or a timeout.
+          const message = err instanceof RequestFailure ? describeFailure(err, t) : err instanceof Error ? err.message : String(err);
+          ctx.logger.error(`image_gen_create failed: ${message.replace(/\n/g, ' | ')}`);
+          return { content: [{ type: 'text', text: `${t('error.failed')}\n${message}` }], isError: true };
         }
       },
     }),
   );
 
+  // Everyday generation defaults, plus the endpoint's own settings menu.
+  composerMenu = ctx.composerActions.register('image-gen-settings', {
+      async getMenu(actionCtx: finch.ComposerActionContext) {
+        const storedModel = await ctx.storage.get<string>(MODEL_STORAGE_KEY);
+        const effectiveModel = storedModel && storedModel.trim() ? storedModel.trim() : DEFAULT_MODEL;
+        const storedQuality = await ctx.storage.get<string>(QUALITY_STORAGE_KEY);
+        const effectiveQuality = storedQuality && storedQuality.trim() ? storedQuality.trim() : DEFAULT_QUALITY;
+        const storedSize = await ctx.storage.get<string>(SIZE_STORAGE_KEY);
+        const effectiveSize = storedSize && checkSize(storedSize).ok ? storedSize.trim() : DEFAULT_SIZE;
+        const knownModel = MODEL_CHOICES.find((choice) => choice.id === effectiveModel);
+        return [
+          {
+            id: 'set-model',
+            label: t('menu.model'),
+            iconName: 'ext:image-gen-icons/cpu-ai',
+            // A relay's own model id has no short name, so it stays as-is.
+            description: knownModel ? t(knownModel.labelKey) : effectiveModel,
+            children: MODEL_CHOICES.map((choice) => ({
+              id: `model:${choice.id}`,
+              label: t(choice.labelKey),
+              description: choice.family,
+              current: choice.id === effectiveModel,
+            })),
+          },
+          {
+            id: 'set-quality',
+            label: t('menu.quality'),
+            iconName: 'ext:image-gen-icons/paintbrush',
+            description: effectiveQuality,
+            children: QUALITY_ENUM.map((value) => ({
+              id: `quality:${value}`,
+              label: value,
+              current: value === effectiveQuality,
+            })),
+          },
+          {
+            id: 'set-size',
+            label: t('menu.size'),
+            iconName: 'ext:image-gen-icons/image-upscale',
+            description: effectiveSize,
+            // Aspect-ratio presets, each resolved to a valid pixel size.
+            children: [
+              ...SIZE_CHOICES.map((preset) => ({
+                id: `size:${preset.size}`,
+                label: t(preset.label),
+                iconName: `ext:image-gen-icons/${preset.icon}`,
+                description: preset.ratio,
+                current: preset.size === effectiveSize,
+              })),
+              {
+                id: 'size:auto',
+                label: t('size.auto'),
+                description: 'auto',
+                current: effectiveSize === 'auto',
+              },
+            ],
+          },
+        ];
+      },
+      async execute(actionCtx, itemId, actions) {
+        // Submenu rows save straight away — no dialog to confirm a single choice.
+        const [kind, ...rest] = itemId.split(':');
+        const chosen = rest.join(':');
+        if (kind === 'model' && chosen) {
+          if (chosen === DEFAULT_MODEL) await ctx.storage.delete(MODEL_STORAGE_KEY);
+          else await ctx.storage.set(MODEL_STORAGE_KEY, chosen);
+          composerMenu?.notifyUpdate();
+          return;
+        }
+        if (kind === 'quality' && QUALITY_ENUM.includes(chosen as QualityOption)) {
+          if (chosen === DEFAULT_QUALITY) await ctx.storage.delete(QUALITY_STORAGE_KEY);
+          else await ctx.storage.set(QUALITY_STORAGE_KEY, chosen);
+          composerMenu?.notifyUpdate();
+          return;
+        }
+        if (kind === 'size') {
+          const stored = await storeDefaultSize(ctx, chosen);
+          if (stored === null) return;
+          composerMenu?.notifyUpdate();
+          return;
+        }
+      },
+    });
+
+  ctx.subscriptions.push(composerMenu);
+
+  // The endpoint is setup, not a knob you flip between generations, so the key
+  // and the base URL live in the Toolcase / container settings menu.
+  // Shown on the settings row until the next probe, so the last result is still
+  // visible after the dialog is dismissed.
+  let lastProbe: string | undefined;
+
   ctx.subscriptions.push(
-    ctx.composerActions.register('image-gen-settings', {
+    ctx.settingsMenu.register({
       async getMenu() {
         const storedBaseUrl = await ctx.storage.get<string>(BASE_URL_STORAGE_KEY);
         const effectiveBaseUrl = storedBaseUrl && storedBaseUrl.trim() ? normalizeBaseUrl(storedBaseUrl) : DEFAULT_BASE_URL;
         const hasKeychainKey = !!(await ctx.secrets.get('OPENAI_API_KEY'));
         const hasStoredKey = !!(await ctx.storage.get<string>(API_KEY_STORAGE_KEY));
-        const keyStatus = hasKeychainKey || hasStoredKey ? 'Configured' : 'Not set';
+        const keyStatus = hasKeychainKey || hasStoredKey ? t('status.configured') : t('status.notSet');
+        const storedProxy = (await ctx.storage.get<string>(PROXY_STORAGE_KEY))?.trim() ?? '';
+        const effectiveProxy = resolveProxy(storedProxy);
+        const proxyDescription = !effectiveProxy
+          ? t('proxy.direct')
+          : storedProxy
+            ? maskProxy(effectiveProxy)
+            : t('proxy.fromEnv', { proxy: maskProxy(effectiveProxy) });
         return [
           {
             id: 'set-api-key',
-            label: 'OpenAI API Key',
-            iconName: 'settings',
+            label: t('menu.apiKey'),
+            iconName: 'ext:image-gen-icons/key-round',
             description: keyStatus,
-            hoverText: `Set the OpenAI API key used by Image Gen. Currently: ${keyStatus}.`,
           },
           {
             id: 'set-base-url',
-            label: 'API Base URL',
-            iconName: 'globe',
+            label: t('menu.baseUrl'),
+            iconName: 'ext:image-gen-icons/link',
             description: effectiveBaseUrl,
-            hoverText: `Change the OpenAI-compatible API endpoint used by Image Gen (e.g. a proxy/relay). Currently: ${effectiveBaseUrl}${storedBaseUrl ? '' : ' (default)'}`,
+          },
+          {
+            id: 'set-proxy',
+            label: t('menu.proxy'),
+            iconName: 'ext:image-gen-icons/globe',
+            description: proxyDescription || t('proxy.direct'),
+          },
+          {
+            id: 'test-connection',
+            label: t('menu.test'),
+            iconName: 'ext:image-gen-icons/plug-zap',
+            description: lastProbe ?? t('menu.test.desc'),
           },
         ];
       },
       async execute(_actionCtx, itemId) {
         if (itemId === 'set-api-key') {
           const result = await ctx.ui.showModalDialog({
-            title: 'OpenAI API Key',
-            description: 'Paste your OpenAI API key. It is stored locally and only sent to the API endpoint used by Image Gen — never shown in chat.',
+            title: t('menu.apiKey'),
+            description: t('dialog.apiKey.desc'),
             fields: [
               {
                 key: 'apiKey',
-                label: 'API Key',
+                label: t('menu.apiKey'),
                 type: 'password',
                 secret: true,
                 placeholder: 'sk-...',
               },
             ],
             actions: [
-              { id: 'cancel', label: 'Cancel' },
-              { id: 'save', label: 'Save', variant: 'primary' },
+              { id: 'cancel', label: t('dialog.cancel') },
+              { id: 'save', label: t('dialog.save'), variant: 'primary' },
             ],
           });
           if (result.action !== 'save') return;
@@ -370,23 +1998,24 @@ Requests go to the OpenAI-compatible endpoint configured via the Image Gen setti
           await ctx.storage.set(API_KEY_STORAGE_KEY, value);
           return;
         }
+
         if (itemId === 'set-base-url') {
           const stored = await ctx.storage.get<string>(BASE_URL_STORAGE_KEY);
           const result = await ctx.ui.showModalDialog({
-            title: 'Image Gen API Base URL',
-            description: `OpenAI-compatible base URL, e.g. a proxy/relay endpoint. Leave empty to use the official ${DEFAULT_BASE_URL}.`,
+            title: t('menu.baseUrl'),
+            description: t('dialog.baseUrl.desc', { default: DEFAULT_BASE_URL }),
             fields: [
               {
                 key: 'baseUrl',
-                label: 'API Base URL',
+                label: t('menu.baseUrl'),
                 type: 'text',
                 placeholder: DEFAULT_BASE_URL,
                 default: stored ?? '',
               },
             ],
             actions: [
-              { id: 'cancel', label: 'Cancel' },
-              { id: 'save', label: 'Save', variant: 'primary' },
+              { id: 'cancel', label: t('dialog.cancel') },
+              { id: 'save', label: t('dialog.save'), variant: 'primary' },
             ],
           });
           if (result.action !== 'save') return;
@@ -397,15 +2026,95 @@ Requests go to the OpenAI-compatible endpoint configured via the Image Gen setti
           }
           if (!isValidHttpUrl(value)) {
             await ctx.ui.showModalDialog({
-              title: 'Invalid URL',
-              message: `"${value}" is not a valid http(s) URL. The base URL was not changed.`,
-              actions: [{ id: 'ok', label: 'OK', variant: 'primary' }],
+              title: t('dialog.invalidUrl.title'),
+              message: t('dialog.invalidUrl.message', { value }),
+              actions: [{ id: 'ok', label: t('dialog.ok'), variant: 'primary' }],
             });
             return;
           }
           await ctx.storage.set(BASE_URL_STORAGE_KEY, normalizeBaseUrl(value));
+          return;
+        }
+
+        if (itemId === 'set-proxy') {
+          const stored = await ctx.storage.get<string>(PROXY_STORAGE_KEY);
+          const envProxy = resolveProxy(undefined);
+          const result = await ctx.ui.showModalDialog({
+            title: t('menu.proxy'),
+            description: t('dialog.proxy.desc', { env: envProxy ? maskProxy(envProxy) : t('proxy.none') }),
+            fields: [
+              {
+                key: 'proxy',
+                label: t('menu.proxy'),
+                type: 'text',
+                placeholder: 'http://127.0.0.1:7890',
+                default: stored ?? '',
+              },
+            ],
+            actions: [
+              { id: 'cancel', label: t('dialog.cancel') },
+              { id: 'save', label: t('dialog.save'), variant: 'primary' },
+            ],
+          });
+          if (result.action !== 'save') return;
+          const value = String(result.values?.proxy ?? '').trim();
+          if (!value) {
+            // Empty means "follow the environment", which is what most proxy
+            // clients export anyway.
+            await ctx.storage.delete(PROXY_STORAGE_KEY);
+            return;
+          }
+          if (!isValidHttpUrl(normalizeProxy(value))) {
+            await ctx.ui.showModalDialog({
+              title: t('dialog.invalidUrl.title'),
+              message: t('dialog.invalidUrl.message', { value }),
+              actions: [{ id: 'ok', label: t('dialog.ok'), variant: 'primary' }],
+            });
+            return;
+          }
+          await ctx.storage.set(PROXY_STORAGE_KEY, normalizeProxy(value));
+          return;
+        }
+
+        if (itemId === 'test-connection') {
+          // A real request that costs nothing: listing models proves DNS, proxy,
+          // TLS and the key without rendering an image.
+          const outcome = await probeConnection(ctx, t);
+          lastProbe = outcome.summary;
+          await ctx.ui.showModalDialog({
+            title: t('menu.test'),
+            message: outcome.detail,
+            actions: [{ id: 'ok', label: t('dialog.ok'), variant: 'primary' }],
+          });
+          return;
         }
       },
+    }),
+  );
+
+  // One listener covers both surfaces: the right-side Panel App and the
+  // application-level App View page (which never calls createPanel itself, so
+  // this is the only place its AppPanel handle is reachable).
+  ctx.subscriptions.push(
+    ctx.ui.onDidOpenPanel((panel) => {
+      livePanels.add(panel);
+      ctx.subscriptions.push(
+        panel.onDidReceiveMessage((message) => {
+          const msg = (message ?? {}) as Record<string, unknown>;
+          void handlePanelMessage(ctx, panel, msg).catch((error: unknown) => {
+            ctx.logger.warn(`gallery message failed: ${error instanceof Error ? error.message : String(error)}`);
+            void panel.postMessage({ type: 'panelError', id: msg.id, requestId: msg.requestId }).catch(() => {});
+          });
+        }),
+      );
+      ctx.subscriptions.push(
+        panel.onDidDispose(() => {
+          livePanels.delete(panel);
+        }),
+      );
+      void sendGallery(ctx, panel).catch((err: unknown) => {
+        ctx.logger.warn(`panel gallery push failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
     }),
   );
 

@@ -40,6 +40,7 @@ interface PanelMessage {
   markdownStyle?: string;
   customCss?: string;
   preferences?: unknown;
+  libraryGroups?: unknown;
   requestId?: number;
   itemId?: string;
   patch?: { label?: string; icon?: string; tooltip?: string; disabled?: boolean; checked?: boolean };
@@ -56,6 +57,7 @@ interface PanelMessage {
   url?: string;
   cwd?: string;
   sessionId?: string;
+  turnId?: string;
   spaceId?: string;
   requirement?: string;
   selectedText?: string;
@@ -144,9 +146,20 @@ interface WritingPreferences {
   customStyleLabel: string;
 }
 
+// Library drawer's group order/collapse state. Same rationale as
+// WritingPreferences: this used to live only in the WebView's localStorage,
+// which does not reliably survive a panel/WebView replacement (e.g. an app
+// restart), so a drag-reorder could silently revert. The host now owns the
+// durable copy.
+interface LibraryGroupState {
+  order: string[];
+  collapsed: Record<string, boolean>;
+}
+
 const STYLE_SLOT_COUNT = 3;
 const WRITING_STYLE_IDS = new Set(['kami', 'bauhaus', 'blueprint', 'botanical', 'newsprint', 'retro', 'sketch', 'terminal', 'custom']);
 const MAX_CUSTOM_STYLE_CSS_LENGTH = 200_000;
+const MAX_LIBRARY_GROUP_IDS = 500;
 
 function result(message: string, isError = false): finch.ToolResult {
   return { content: [{ type: 'text', text: message }], isError };
@@ -212,6 +225,11 @@ interface LastPathState {
   /** Per-file style design that's been applied to the preview but not yet
    * saved to a slot — see PendingStyle. */
   pendingStyles?: Record<string, PendingStyle>;
+  /** Most recent AI Session touched for this file — whichever of
+   * rewriteSessions/styleSessions was used last, so App View's "更多"
+   * menu can always offer a way back into that conversation, not just
+   * while a turn is still visibly in flight (see `lastSessionInfo`). */
+  lastAiSessions?: Record<string, { sessionId: string; at: number }>;
 }
 
 function stateFile(ctx: finch.MiniToolContext): string {
@@ -233,6 +251,37 @@ function styleSlotsFile(ctx: finch.MiniToolContext): string {
 // editing density are reader preferences, not document content.
 function writingPreferencesFile(ctx: finch.MiniToolContext): string {
   return path.join(ctx.storagePath, 'writing-preferences.json');
+}
+
+function libraryGroupsFile(ctx: finch.MiniToolContext): string {
+  return path.join(ctx.storagePath, 'library-groups.json');
+}
+
+function normalizeLibraryGroups(raw: unknown): LibraryGroupState {
+  const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const order = Array.isArray(value.order)
+    ? value.order.filter((id): id is string => typeof id === 'string').slice(0, MAX_LIBRARY_GROUP_IDS)
+    : [];
+  const collapsedRaw = value.collapsed && typeof value.collapsed === 'object' ? value.collapsed as Record<string, unknown> : {};
+  const collapsed: Record<string, boolean> = {};
+  Object.keys(collapsedRaw).slice(0, MAX_LIBRARY_GROUP_IDS).forEach((id) => { collapsed[id] = collapsedRaw[id] === true; });
+  return { order, collapsed };
+}
+
+async function readLibraryGroups(ctx: finch.MiniToolContext): Promise<LibraryGroupState | undefined> {
+  try {
+    const raw = await readFile(libraryGroupsFile(ctx), 'utf8');
+    return normalizeLibraryGroups(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeLibraryGroups(ctx: finch.MiniToolContext, raw: unknown): Promise<LibraryGroupState> {
+  const state = normalizeLibraryGroups(raw);
+  await mkdir(ctx.storagePath, { recursive: true });
+  await writeFile(libraryGroupsFile(ctx), JSON.stringify(state), 'utf8');
+  return state;
 }
 
 function normalizeWritingPreferences(raw: unknown): WritingPreferences {
@@ -892,14 +941,15 @@ async function getAssistantName(ctx: finch.MiniToolContext): Promise<string> {
 
 async function sendReady(ctx: finch.MiniToolContext, panel: finch.AppPanel): Promise<void> {
   const pickFileSupported = ctx.api.supports('ui.pickFile');
-  const [styleSlots, writingPreferences, assistantName] = await Promise.all([
+  const [styleSlots, writingPreferences, libraryGroups, assistantName] = await Promise.all([
     readStyleSlots(ctx),
     readWritingPreferences(ctx),
+    readLibraryGroups(ctx),
     getAssistantName(ctx),
   ]);
   ctx.logger.info(`sending ready to panel; pickFileSupported = ${pickFileSupported}`);
   await panel.postMessage({
-    type: 'ready', locale: ctx.i18n.locale, pickFileSupported, styleSlots, writingPreferences, assistantName,
+    type: 'ready', locale: ctx.i18n.locale, pickFileSupported, styleSlots, writingPreferences, libraryGroups, assistantName,
     // So the page can render `cwd` the OS-friendly way (`~/…`) without a
     // round trip — it never needs the raw value for anything but display.
     homeDir: os.homedir(),
@@ -927,6 +977,32 @@ async function revealInFileManager(ctx: finch.MiniToolContext, targetPath: strin
   } catch (error) {
     ctx.logger.warn(`Could not open file manager for ${targetPath}: ${String(error)}`);
   }
+}
+
+/** Records that `sessionId` is the most recently touched AI Session for this
+ * file, regardless of whether it came from a rewrite or a style-design turn.
+ * Only ever moves forward in time — call it right after either flow resolves
+ * a session id (new or reused), so "查看最近的会话" always points at
+ * whichever conversation the writer interacted with last. */
+async function rememberLastAiSession(ctx: finch.MiniToolContext, sourcePath: string, sessionId: string): Promise<void> {
+  try {
+    await mutateState(ctx, (state) => {
+      state.lastAiSessions = { ...state.lastAiSessions, [sourcePath]: { sessionId, at: Date.now() } };
+    });
+  } catch (error) {
+    ctx.logger.warn(`Could not persist last AI session: ${String(error)}`);
+  }
+}
+
+/** The current file's most recent AI Session, if any and if it still
+ * resolves (not deleted/archived) — used to enable/populate App View's
+ * "查看最近的会话" menu entry independent of any in-flight operation. */
+async function readLastAiSession(ctx: finch.MiniToolContext, sourcePath: string): Promise<string | undefined> {
+  const state = await readLastPathState(ctx);
+  const id = state.lastAiSessions?.[sourcePath]?.sessionId;
+  if (!id) return undefined;
+  const session = await ctx.sessions.get(id).catch(() => undefined);
+  return session ? id : undefined;
 }
 
 async function readRewriteSession(ctx: finch.MiniToolContext, sourcePath: string): Promise<string | undefined> {
@@ -1003,6 +1079,42 @@ async function notifyRewritePanels(sourcePath: string, message: Record<string, u
   await Promise.all(targets.map((panel) => panel.postMessage(message).catch(() => {})));
 }
 
+/** Replay operation UI after this file is opened again from Home, history, or
+ * a page rebind. The Agent Session keeps running independently of the view. */
+async function restoreInFlightOperations(ctx: finch.MiniToolContext, panel: finch.AppPanel, sourcePath: string): Promise<void> {
+  const state = await readLastPathState(ctx);
+  const operation = state.rewriteOperations?.[sourcePath];
+  if (operation) await panel.postMessage({
+    type: 'rewriteSessionStarted', sessionId: operation.sessionId, turnId: operation.turnId,
+    startLine: operation.startLine, endLine: operation.endLine, rewriteMode: operation.rewriteMode,
+  });
+  const styleOperation = state.styleOperations?.[sourcePath];
+  if (styleOperation) await panel.postMessage({ type: 'styleSessionStarted', sessionId: styleOperation.sessionId });
+  const pendingStyle = state.pendingStyles?.[sourcePath];
+  if (pendingStyle) await panel.postMessage({ type: 'customStyleSet', css: pendingStyle.css, label: pendingStyle.label });
+  // Independent of any in-flight operation above: tell the panel whether
+  // this file has ANY past AI Session at all, so App View's "更多" menu can
+  // offer a persistent way back into it (not just while a turn is visibly
+  // running). Only surface ids that still resolve.
+  const lastSessionId = await readLastAiSession(ctx, sourcePath);
+  await panel.postMessage({ type: 'lastSessionInfo', sessionId: lastSessionId ?? null });
+}
+
+async function cancelRewriteSession(ctx: finch.MiniToolContext, panel: finch.AppPanel, message: PanelMessage): Promise<void> {
+  const sourcePath = String(message.path ?? '').trim();
+  const sessionId = String(message.sessionId ?? '').trim();
+  const turnId = String(message.turnId ?? '').trim();
+  if (panel.view !== 'appView' || !path.isAbsolute(sourcePath) || !sessionId || !turnId) return;
+  const operation = (await readLastPathState(ctx)).rewriteOperations?.[sourcePath];
+  // The page only ever receives ids from the persisted operation, but validate
+  // again on the host boundary so a delayed click cannot stop a newer turn.
+  if (!operation || operation.sessionId !== sessionId || operation.turnId !== turnId) return;
+  const accepted = await ctx.sessions.cancelTurn(sessionId, turnId);
+  if (accepted) {
+    await notifyRewritePanels(sourcePath, { type: 'rewriteCancellationRequested', sessionId, turnId });
+  }
+}
+
 async function startRewriteSession(ctx: finch.MiniToolContext, panel: finch.AppPanel, message: PanelMessage): Promise<void> {
   const sourcePath = String(message.path ?? '').trim();
   const selectedText = String(message.selectedText ?? '').trim();
@@ -1024,12 +1136,13 @@ async function startRewriteSession(ctx: finch.MiniToolContext, panel: finch.AppP
     const session = await ctx.sessions.create({
       ...(scope.spaceId ? { space: { spaceId: scope.spaceId } } : {}),
       title: `改写：${path.basename(sourcePath)}`,
-      activity: 'interactive',
+      activity: 'background',
       permissionMode: 'acceptCalls',
     });
     sessionId = session.sessionId;
     await rememberRewriteSession(ctx, sourcePath, sessionId);
   }
+  await rememberLastAiSession(ctx, sourcePath, sessionId);
   const lineText = message.startLine
     ? `位置：第 ${message.startLine}${message.endLine && message.endLine !== message.startLine ? `–${message.endLine}` : ''} 行。`
     : '';
@@ -1056,7 +1169,7 @@ async function startRewriteSession(ctx: finch.MiniToolContext, panel: finch.AppP
   };
   await rememberRewriteOperation(ctx, sourcePath, operation).catch((error) => ctx.logger.warn(`Could not persist rewrite operation: ${String(error)}`));
   await notifyRewritePanels(sourcePath, {
-    type: 'rewriteSessionStarted', sessionId, spaceName: scope.spaceName,
+    type: 'rewriteSessionStarted', sessionId, turnId: receipt.turnId, spaceName: scope.spaceName,
     title: `${rewriteMode === 'continue' ? '续写' : '改写'}：${path.basename(sourcePath)}`,
     startLine: operation.startLine, endLine: operation.endLine, rewriteMode,
   });
@@ -1065,7 +1178,7 @@ async function startRewriteSession(ctx: finch.MiniToolContext, panel: finch.AppP
     await clearRewriteOperation(ctx, sourcePath, receipt.turnId).catch((error) => ctx.logger.warn(`Could not clear rewrite operation: ${String(error)}`));
     await notifyRewritePanels(sourcePath, {
       type: result.state === 'completed' ? 'rewriteSessionFinished' : 'rewriteSessionFailed',
-      sessionId,
+      sessionId, turnId: receipt.turnId,
       message: result.state === 'completed' ? `${verb}已完成。` : result.state === 'timeout' ? `${verb}仍在会话中继续。` : `${verb}会话未完成。`,
     });
   });
@@ -1115,12 +1228,13 @@ async function startStyleSession(ctx: finch.MiniToolContext, panel: finch.AppPan
     const session = await ctx.sessions.create({
       ...(scope.spaceId ? { space: { spaceId: scope.spaceId } } : {}),
       title: `设计排版：${path.basename(sourcePath)}`,
-      activity: 'interactive',
+      activity: 'background',
       permissionMode: 'acceptCalls',
     });
     sessionId = session.sessionId;
     await rememberStyleSession(ctx, sourcePath, sessionId);
   }
+  await rememberLastAiSession(ctx, sourcePath, sessionId);
   const prompt = `请为这篇公众号文章设计一套自定义排版 CSS。${baseNote ? baseNote + '，' : ''}你的 CSS 会叠加在基础风格之上。要求：只写普通 CSS 规则，选择器限定在 #bm-md 下的标签/结构（如 #bm-md h1、#bm-md p、#bm-md blockquote、#bm-md pre code、#bm-md a、#bm-md strong、#bm-md table 等），不要使用 class，必要时用 !important 覆盖基础风格。可参考 bm.md 内置风格的设计语言：kami（暖色纸感）、bauhaus（几何撞色）、blueprint（技术蓝图网格）、botanical（清新绿意）、newsprint（报刊衬线）、retro（复古怀旧）、sketch（手绘风）、terminal（等宽暗色终端风）。文章路径：${sourcePath}。要求：${requirement}。设计好后直接调用 markdown_editor_document 的 set_style（传 path="${sourcePath}"，css 和简短 label，不要传 slot——传 path 是为了让它能找到这篇文档对应的预览窗口，即使用户已经切换到别的界面），让它应用到预览；不要在这里询问要覆盖哪个槽位——面板会自己给用户一个轻量的“保存为自定义风格”按钮，用户回到这篇文档时也还能看到。完成后用一两句话简短说明设计思路即可。`;
   const receipt = await ctx.sessions.send(sessionId, {
     text: prompt,
@@ -1180,24 +1294,7 @@ async function handleMessage(ctx: finch.MiniToolContext, panel: finch.AppPanel, 
       // in-flight range after restoring the document so the writer knows an
       // AI turn is still working on this file.
       const currentPath = livePanelDocuments.get(panel.id)?.path;
-      if (currentPath) {
-        const state = await readLastPathState(ctx);
-        const operation = state.rewriteOperations?.[currentPath];
-        if (operation) await panel.postMessage({
-          type: 'rewriteSessionStarted', sessionId: operation.sessionId,
-          startLine: operation.startLine, endLine: operation.endLine,
-          rewriteMode: operation.rewriteMode,
-        });
-        // Same idea for an AI-style-design Session still running for this
-        // file — restores the wand icon's loading spinner.
-        const styleOperation = state.styleOperations?.[currentPath];
-        if (styleOperation) await panel.postMessage({ type: 'styleSessionStarted', sessionId: styleOperation.sessionId });
-        // And a design that already landed but hasn't been saved to a slot
-        // yet — the user may have navigated away before seeing the one-tap
-        // save prompt, so replay it now that they're back on this document.
-        const pendingStyle = state.pendingStyles?.[currentPath];
-        if (pendingStyle) await panel.postMessage({ type: 'customStyleSet', css: pendingStyle.css, label: pendingStyle.label });
-      }
+      if (currentPath) await restoreInFlightOperations(ctx, panel, currentPath);
       return;
     }
     case 'openImage': {
@@ -1264,6 +1361,7 @@ async function handleMessage(ctx: finch.MiniToolContext, panel: finch.AppPanel, 
         watchSource(ctx, panel, sourcePath);
         await rememberLastPath(ctx, panel, sourcePath);
         await sendDocument(panel, { path: sourcePath, markdown, title: documentTitle(markdown, sourcePath), draftRestored, draftConflict, diskMarkdown });
+        await restoreInFlightOperations(ctx, panel, sourcePath);
       } catch (error) {
         ctx.logger.error(`pickFile() threw: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
         await panel.postMessage({
@@ -1285,6 +1383,7 @@ async function handleMessage(ctx: finch.MiniToolContext, panel: finch.AppPanel, 
         watchSource(ctx, panel, sourcePath);
         await rememberLastPath(ctx, panel, sourcePath);
         await sendDocument(panel, { path: sourcePath, markdown, title: documentTitle(markdown, sourcePath), draftRestored, draftConflict, diskMarkdown });
+        await restoreInFlightOperations(ctx, panel, sourcePath);
       } catch (error) {
         await panel.postMessage({ type: 'error', message: `Cannot read file: ${error instanceof Error ? error.message : String(error)}` });
       }
@@ -1350,6 +1449,10 @@ async function handleMessage(ctx: finch.MiniToolContext, panel: finch.AppPanel, 
       await startRewriteSession(ctx, panel, message);
       return;
     }
+    case 'cancelRewrite': {
+      await cancelRewriteSession(ctx, panel, message);
+      return;
+    }
     case 'requestStyleSession': {
       await startStyleSession(ctx, panel, message);
       return;
@@ -1376,6 +1479,14 @@ async function handleMessage(ctx: finch.MiniToolContext, panel: finch.AppPanel, 
         await writeWritingPreferences(ctx, message.preferences);
       } catch (error) {
         ctx.logger.warn(`Could not save writing preferences: ${String(error)}`);
+      }
+      return;
+    }
+    case 'saveLibraryGroups': {
+      try {
+        await writeLibraryGroups(ctx, message.libraryGroups);
+      } catch (error) {
+        ctx.logger.warn(`Could not save library group order: ${String(error)}`);
       }
       return;
     }
@@ -1555,6 +1666,9 @@ export function activate(ctx: finch.MiniToolContext): void {
     },
     type: {
       svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-type-icon lucide-type"><path d="M12 4v16"/><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"/><path d="M9 20h6"/></svg>',
+    },
+    'whole-word': {
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-whole-word"><circle cx="7" cy="12" r="3"/><path d="M10 9v6"/><circle cx="17" cy="12" r="3"/><path d="M14 7v8"/><path d="M22 17v1c0 .5-.5 1-1 1H3c-.5 0-1-.5-1-1v-1"/></svg>',
     },
     'wechat-copy': {
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path stroke-linecap="round" stroke-width="2" d="M7 7h.009m5.982 0H13m4.991 7.5H18m-4 0h.009"></path><path stroke-width="2" d="M10 16c0 2.761 2.686 5 6 5c.907 0 1.767-.168 2.538-.468c.189-.073.393-.1.592-.063L22 21l-.652-2.03a1.13 1.13 0 0 1 .11-.89A4.3 4.3 0 0 0 22 16c0-2.761-2.686-5-6-5s-6 2.239-6 5Z"></path><path stroke-width="2" d="M17.873 11.249Q18 10.639 18 10c0-3.866-3.582-7-8-7s-8 3.134-8 7c0 1.112.297 2.164.824 3.098c.147.26.196.567.108.853L2 17l3.914-.76c.208-.041.422-.013.617.07a9 9 0 0 0 3.589.69"></path></svg>',

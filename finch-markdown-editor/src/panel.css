@@ -1,24 +1,59 @@
+/* Every Finch theme token is referenced through one of these local aliases,
+   never as a bare `var(--finch-x)` with no fallback: the platform injects the
+   real values asynchronously (see the boot gate below), and a declaration
+   whose var() has no fallback is simply dropped while that is still pending.
+   The light/dark branches mean the aliases also resolve to a plausible colour
+   if the tokens never arrive at all. */
 :root{
-  --bg:var(--finch-bg-root,#f7f7f8);
+  --bg:var(--finch-bg-main,#f7f7f8);
   --card:var(--finch-bg-elevated,#fff);
   --text:var(--finch-text-primary,#1d1d20);
   --muted:var(--finch-text-secondary,#777);
   --border:var(--finch-border,#ddd);
   --accent:var(--finch-accent,#3f6b56);
+  --hover:var(--finch-bg-hover,#ececef);
+  --active:var(--finch-bg-active,#e2e2e7);
 }
 @media (prefers-color-scheme: dark) {
   :root{
-    --bg:var(--finch-bg-root,#17171a);
+    --bg:var(--finch-bg-main,#17171a);
     --card:var(--finch-bg-elevated,#242429);
     --text:var(--finch-text-primary,#eee);
     --muted:var(--finch-text-secondary,#aaa);
     --border:var(--finch-border,#3c3c43);
     --accent:var(--finch-accent,#70a889);
+    --hover:var(--finch-bg-hover,#2b2b32);
+    --active:var(--finch-bg-active,#34343d);
   }
 }
+/* Boot gate. `md-boot` hides the app tree for the first frame(s): panel.html
+   paints the surface immediately (from the theme values this page saw last
+   time — see the inline script there), but whether the host is about to push
+   a document is still unknown, and the empty-state home page must never flash
+   in front of it. panel.ts drops this class as soon as the host answers.
+   `visibility:hidden` rather than `display:none`, because CodeMirror has to
+   measure its line layout while it is still hidden — and because `visibility`
+   on an ancestor is inherited and never re-enabled by a descendant, one class
+   covers the whole tree while leaving the painted body background alone. */
+html.md-boot .app{visibility:hidden}
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:13px var(--finch-font-body,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif)}
+/* Windows and Linux reserve a scrollbar track in Chromium. Keep a compact
+   thumb for direct dragging, but make it appear only while hovering or
+   scrolling; the track itself remains transparent. macOS keeps its system
+   scrollbar behavior unchanged. */
+/* Do not set `scrollbar-width: thin`: it overrides the WebKit width below
+   in Chromium/Electron. */
+body.non-mac-platform .cm-scroller{scrollbar-color:color-mix(in srgb,var(--muted) 20%,transparent) transparent}
+/* The 2px transparent border on either side leaves an 8px painted thumb. */
+body.non-mac-platform .cm-scroller::-webkit-scrollbar{width:12px;height:12px}
+body.non-mac-platform .cm-scroller::-webkit-scrollbar-track{background:transparent}
+body.non-mac-platform .cm-scroller::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:999px;background-color:color-mix(in srgb,var(--muted) 20%,transparent);background-clip:content-box}
+body.non-mac-platform .cm-scroller:hover::-webkit-scrollbar-thumb,
+body.non-mac-platform .cm-scroller.cm-scrollbar-active::-webkit-scrollbar-thumb{background-color:color-mix(in srgb,var(--muted) 58%,transparent)}
+body.non-mac-platform .cm-scroller:hover{scrollbar-color:color-mix(in srgb,var(--muted) 58%,transparent) transparent}
+body.non-mac-platform .cm-scroller.cm-scrollbar-active{scrollbar-color:color-mix(in srgb,var(--muted) 58%,transparent) transparent}
 .app{width:100%;height:100vh;display:flex;flex-direction:column}
 .stage{position:relative;flex:1;min-height:0}
 .pane{position:absolute;inset:0;display:none}
@@ -92,7 +127,7 @@ body{margin:0;background:var(--bg);color:var(--text);font:13px var(--finch-font-
    treatment used elsewhere — it's a routine "save" action here, not
    something that needs to compete visually with the rest of the chrome. */
 body.app-view .status-inline-btn{color:var(--text)}
-body.app-view .status-inline-btn:hover{background:var(--finch-bg-hover,var(--bg));color:var(--text);border-color:var(--border)}
+body.app-view .status-inline-btn:hover{background:var(--hover);color:var(--text);border-color:var(--border)}
 .status:empty{padding:0;border-top:0}
 /* Changed glyphs briefly take the accent color, then settle back to normal
    text. Nested syntax spans receive the same animation; no background flash. */
@@ -138,7 +173,7 @@ body.app-view .status-inline-btn:hover{background:var(--finch-bg-hover,var(--bg)
 @media (prefers-reduced-motion:reduce){.confirm-overlay,.confirm-card{animation:none}}
 .confirm-card p{margin:0 0 16px;font-size:13px;line-height:1.6;color:var(--text)}
 .confirm-actions{display:flex;justify-content:flex-end;gap:8px}
-.confirm-actions button{font:inherit;font-size:13px;border:1px solid var(--border);background:transparent;color:var(--text);border-radius:7px;padding:6px 12px;cursor:pointer}
+.confirm-actions button{flex:none;white-space:nowrap;font:inherit;font-size:13px;border:1px solid var(--border);background:transparent;color:var(--text);border-radius:7px;padding:6px 12px;cursor:pointer}
 .confirm-actions button:hover{background:var(--bg)}
 .confirm-actions button.primary{border-color:var(--accent);background:var(--accent);color:#fff}
 .confirm-actions button.primary:hover{filter:brightness(1.06)}
@@ -152,7 +187,7 @@ body.app-view .status-inline-btn:hover{background:var(--finch-bg-hover,var(--bg)
 .actions{position:absolute;right:32px;bottom:32px;z-index:8;display:flex;align-items:center;gap:3px;padding:5px;border-radius:11px;background:var(--card);border:1px solid var(--border);box-shadow:0 6px 20px rgba(0,0,0,.18);transition:gap .15s ease}
 .actions[hidden]{display:none}
 .actions button{position:relative;display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--text);font:inherit;cursor:pointer;white-space:nowrap}
-.actions button:hover:not(:disabled){background:var(--finch-bg-hover,var(--bg))}
+.actions button:hover:not(:disabled){background:var(--hover)}
 .actions button[data-tooltip]::after{content:attr(data-tooltip);position:absolute;left:50%;bottom:calc(100% + 8px);z-index:20;padding:6px 8px;border:1px solid var(--border);border-radius:7px;background:linear-gradient(135deg,color-mix(in srgb,var(--card) 96%,#fff),var(--bg));box-shadow:0 5px 16px rgba(0,0,0,.2);color:var(--text);font-size:12px;line-height:1;white-space:nowrap;pointer-events:none;opacity:0;transform:translate(-50%,3px);transition:opacity .16s ease,transform .16s ease}
 .actions button[data-tooltip]:hover::after{opacity:1;transform:translate(-50%,0)}
 /* Center tooltips over ordinary buttons; at either end of the floating bar,
@@ -177,7 +212,7 @@ body.app-view .status-inline-btn:hover{background:var(--finch-bg-hover,var(--bg)
 
 /* Full-screen App View shell. The same document remains a compact, host-toolbar-
    driven Panel App until finch:env explicitly identifies the appView surface. */
-.app-toolbar{height:48px;flex:none;align-items:center;gap:12px;padding:7px 12px;border-bottom:1px solid var(--border);background:var(--card)}
+.app-toolbar{height:48px;flex:none;align-items:center;gap:12px;padding:7px 12px;border-bottom:1px solid var(--border);background:var(--bg)}
 body.app-view .app-toolbar{display:flex!important}
 .app-toolbar-group{display:flex;align-items:center;gap:6px;flex:none}
 .app-toolbar-end{margin-left:auto}
@@ -189,11 +224,66 @@ body.app-view .app-toolbar{display:flex!important}
    blockification vs. the span's own line-height baseline) and visibly
    drift a couple of px apart even though both parents are
    align-items:center flex boxes. */
-.app-tool svg{display:block;width:17px;height:17px;stroke-width:1.8}.app-tool:hover:not(:disabled){background:var(--finch-bg-hover,var(--bg))}
-.app-tool:disabled{opacity:.4;cursor:default}.app-tool.checked{color:var(--text);background:var(--finch-bg-active,color-mix(in srgb,var(--text) 10%,transparent))}.app-tool.dirty{background:transparent}
-.app-tool-label{min-width:auto;padding:0 9px}.ic-save,.ic-save-check{display:inline-flex;align-items:center}.ic-save[hidden],.ic-save-check[hidden]{display:none}.app-menu-wrap{position:relative}.app-menu{position:absolute;z-index:32;top:calc(100% + 7px);right:0;min-width:174px;padding:5px;border:1px solid var(--border);border-radius:9px;background:var(--card);box-shadow:0 2px 8px rgba(0,0,0,.12)}
-.app-menu button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;padding:7px 9px;border:0;border-radius:6px;background:transparent;color:var(--text);font:12px var(--finch-font-body,system-ui);text-align:left;cursor:pointer}.app-menu button:hover{background:var(--finch-bg-hover,var(--bg))}.app-menu button.checked{color:var(--text);background:var(--finch-bg-active,color-mix(in srgb,var(--text) 10%,transparent));font-weight:600}.app-menu hr{margin:5px 3px;border:0;border-top:1px solid var(--border)}
+.app-tool svg{display:block;width:17px;height:17px;stroke-width:1.8}.app-tool:hover:not(:disabled){background:var(--hover)}
+.app-tool:disabled{opacity:.4;cursor:default}.app-tool.checked{color:var(--text);background:var(--active)}.app-tool.dirty{background:transparent}
+.app-tool-label{min-width:auto;padding:0 9px}.app-word-count{min-width:0;padding-inline:8px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;cursor:pointer}.app-word-count svg{width:14px;height:14px;flex:none}.app-word-count svg[hidden]{display:none!important}.app-word-count:hover{color:var(--text)}.ic-save,.ic-save-check{display:inline-flex;align-items:center}.ic-save[hidden],.ic-save-check[hidden]{display:none}.app-menu-wrap{position:relative}.app-menu{position:absolute;z-index:32;top:calc(100% + 7px);right:0;min-width:174px;padding:5px;border:1px solid var(--border);border-radius:9px;background:var(--card);box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.app-menu button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;padding:7px 9px;border:0;border-radius:6px;background:transparent;color:var(--text);font:12px var(--finch-font-body,system-ui);text-align:left;cursor:pointer}.app-menu button:hover{background:var(--hover)}.app-menu button.checked{color:var(--text);background:var(--active);font-weight:600}.app-menu button:disabled{color:var(--muted);cursor:default;opacity:.5}.app-menu button:disabled:hover{background:transparent}.app-menu hr{margin:5px 3px;border:0;border-top:1px solid var(--border)}
 .app-document-meta{min-width:0;display:flex;flex-direction:column;gap:1px}.app-document-meta strong,.app-document-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.app-document-meta strong{font-size:13px}.app-document-meta span{max-width:34vw;color:var(--muted);font-size:11px}
+/* Focus mode ("专注") in App View: instead of just dimming inactive editor
+   lines (see codemirror.ts), collapse the entire toolbar down to a single
+   floating toggle pinned top-right, out of the writing surface's way. Both
+   toolbar groups hide except #appFocus itself, so the same button — now a
+   lone pill — re-expands the toolbar on the next click. Gated on
+   has-document as well as focus-mode: a restored focusMode can be true
+   before any document is open, and the Home screen still needs its full
+   toolbar (Library/Home/Open) to navigate. */
+body.app-view.has-document.focus-mode .app-toolbar{
+  position:fixed;top:12px;right:18px;left:auto;width:auto;height:auto;
+  padding:0;gap:0;border:0;background:transparent;z-index:20;
+}
+body.app-view.has-document.focus-mode .app-toolbar-group:not(.app-toolbar-end){display:none!important}
+body.app-view.has-document.focus-mode .app-toolbar-end{margin-left:0;flex-direction:column;align-items:flex-end;gap:6px}
+body.app-view.has-document.focus-mode .app-toolbar-end>*:not(#appFocus):not(#appWordCountWrap){display:none!important}
+body.app-view.has-document.focus-mode #appFocus{
+  order:0;
+  width:36px;height:36px;padding:0;border-color:var(--border);border-radius:999px;
+  background:var(--card);box-shadow:0 6px 18px rgba(0,0,0,.16);
+  opacity:.62;transition:opacity .15s ease;
+  animation:mdFocusPillIn .22s cubic-bezier(.16,1,.3,1);
+}
+body.app-view.has-document.focus-mode #appFocus:hover,
+body.app-view.has-document.focus-mode #appFocus:focus-visible{opacity:1}
+body.app-view.has-document.focus-mode #appWordCountWrap{order:1}
+body.app-view.has-document.focus-mode #appWordCount{
+  height:24px;min-width:0;padding:0 10px;border:1px solid var(--border);border-radius:999px;
+  background:var(--card);box-shadow:0 4px 12px rgba(0,0,0,.12);opacity:.78;
+}
+body.app-view.has-document.focus-mode #appWordCount:hover{opacity:1}
+body.app-view.has-document.focus-mode #appWordCount svg{width:12px;height:12px}
+/* Rises up into its resting corner rather than just fading in place. */
+@keyframes mdFocusPillIn{from{opacity:0;transform:translateY(14px)}to{opacity:.62;transform:translateY(0)}}
+/* The button sits flush against the right edge here (unlike its normal
+   toolbar position), so the shared centered tooltip (`.app-tool[data-
+   tooltip]::after` uses left:50%/translate(-50%,..)) would spill past the
+   window's right edge and get clipped. Anchor it to the button's right
+   edge instead — the id selector's specificity is enough to beat the
+   shared rule without touching it. */
+body.app-view.has-document.focus-mode #appFocus[data-tooltip]::after{
+  left:auto;right:0;transform:translateY(-3px);
+}
+body.app-view.has-document.focus-mode #appFocus[data-tooltip]:hover::after{
+  transform:translateY(0);
+}
+/* The count pill sits against the right edge in focus mode too. Its detail
+   tooltip has two lines, so anchor its right edge instead of centering it
+   beyond the window boundary. */
+body.app-view #appWordCount[data-tooltip]::after{white-space:pre;line-height:1.45;text-align:left}
+body.app-view.has-document.focus-mode #appWordCount[data-tooltip]::after{
+  left:auto;right:0;transform:translateY(-3px);
+}
+body.app-view.has-document.focus-mode #appWordCount[data-tooltip]:hover::after{
+  transform:translateY(0);
+}
 body.app-view .stage{display:grid;grid-template-columns:minmax(0,1fr) 6px var(--preview-width,480px);background:var(--bg)}
 body.app-view .pane{position:relative;inset:auto;min-width:0;min-height:0}
 body.app-view .pane.active{display:block}
@@ -201,6 +291,13 @@ body.app-view.has-document #editPane,body.app-view.has-document #previewPane{dis
 body.app-view #editPane{border-right:1px solid var(--border)}
 body.app-view .preview-shell{padding:20px;display:flex;justify-content:center;align-items:stretch}
 body.app-view #article{width:100%;border:1px solid var(--border)}
+/* The sidebar panel had no such cap, so widening the Finch panel stretched the
+   rendered article edge to edge — an unreadably long measure on a big display.
+   Reuse App View's maximum preview width (560px, the top of its 370–560 clamp)
+   as a plain reading cap here: the article centers and stops growing past it,
+   while a panel narrower than 560px keeps its previous full-width behavior. */
+body:not(.app-view) .preview-shell{display:flex;justify-content:center;align-items:stretch}
+body:not(.app-view) #article{max-width:560px;border:1px solid var(--border)}
 body.app-view.preview-hidden .stage{grid-template-columns:minmax(0,1fr)}body.app-view.preview-hidden #previewPane,body.app-view.preview-hidden .preview-resizer{display:none!important}
 @keyframes cm-ai-spin{to{transform:rotate(360deg)}}
 .ic-ai-style-loading{animation:cm-ai-spin .8s linear infinite}
@@ -219,7 +316,7 @@ body.app-view .empty{grid-column:1/-1;background:var(--bg);padding:54px 38px}
 body.app-view .home{max-width:1040px}body.app-view #emptyNew{display:none}
 body.app-view .actions{right:28px;bottom:28px}
 .library-backdrop{position:fixed;z-index:39;inset:0;background:rgba(0,0,0,.24)}
-.library-drawer{position:fixed;z-index:40;top:0;bottom:0;left:0;width:min(390px,88vw);padding:0;background:var(--card);border-right:1px solid var(--border);transform:translateX(-102%);transition:transform .18s ease;display:flex;flex-direction:column}
+.library-drawer{position:fixed;z-index:40;top:0;bottom:0;left:0;width:min(310px,88vw);padding:0;background:var(--card);border-right:1px solid var(--border);transform:translateX(-102%);transition:transform .18s ease;display:flex;flex-direction:column}
 .library-drawer.open{transform:translateX(0)}.library-drawer>header{height:58px;display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)}
 .library-drawer>header div{display:flex;flex-direction:column}.library-drawer>header span{font-size:11px;color:var(--muted)}.library-drawer>header>button{border:0;background:transparent;color:var(--muted);font-size:24px;cursor:pointer}
 /* Specificity note: `.library-drawer>header div` above sets
@@ -229,14 +326,14 @@ body.app-view .actions{right:28px;bottom:28px}
 .library-drawer>header .library-header-actions{display:flex;flex-direction:row;align-items:center;gap:2px}
 .library-icon-btn{border:0;background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:7px;padding:0}
 .library-icon-btn svg{width:16px;height:16px}
-.library-icon-btn:hover{background:var(--finch-bg-hover,var(--bg));color:var(--text)}
+.library-icon-btn:hover{background:var(--hover);color:var(--text)}
 .library-icon-btn.active{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
 .library-header-actions #libraryClose{border:0;background:transparent;color:var(--muted);font-size:24px;cursor:pointer;line-height:1;width:28px;height:28px;border-radius:7px}
-.library-header-actions #libraryClose:hover{background:var(--finch-bg-hover,var(--bg));color:var(--text)}
+.library-header-actions #libraryClose:hover{background:var(--hover);color:var(--text)}
 /* Reorder mode: groups collapse to flat draggable header rows (no expand/
    collapse, no per-document rows) so ordering is the only thing to do. */
 .library-group-reorder{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 9px;border-radius:9px;cursor:grab;user-select:none;touch-action:none}
-.library-group-reorder:hover{background:var(--finch-bg-hover,var(--bg))}
+.library-group-reorder:hover{background:var(--hover)}
 .library-group-reorder.dragging{opacity:.32}
 .library-group-reorder[data-draggable]:not([data-draggable="true"]),.library-group-reorder:not([data-draggable]){cursor:default;opacity:.7}
 .library-reorder-handle{flex:none;width:14px;text-align:center;color:var(--muted);font-size:13px;line-height:1;letter-spacing:-1px}
@@ -248,14 +345,14 @@ body.app-view .actions{right:28px;bottom:28px}
    path + time metadata instead of cramming all three into one text run. */
 .library-groups{flex:1;overflow:auto;padding:10px 12px 20px}
 .library-group{margin:0 0 8px;border:0;border-radius:9px}.library-group[open]{background:color-mix(in srgb,var(--text) 2%,transparent)}
-.library-group summary{display:flex;align-items:center;gap:7px;min-height:32px;padding:0 9px;list-style:none;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;user-select:none;touch-action:none}.library-group summary::-webkit-details-marker{display:none}.library-group summary::before{content:'›';color:var(--muted);font-size:17px;font-weight:400;line-height:1;transform:rotate(0deg);transition:transform .14s ease}.library-group[open] summary::before{transform:rotate(90deg)}.library-group summary:hover{background:var(--finch-bg-hover,var(--bg));border-radius:8px}.library-group[data-draggable="true"] summary{cursor:grab}.library-group.dragging{opacity:.32}
+.library-group summary{display:flex;align-items:center;gap:7px;min-height:32px;padding:0 9px;list-style:none;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;user-select:none;touch-action:none}.library-group summary::-webkit-details-marker{display:none}.library-group summary::before{content:'›';color:var(--muted);font-size:17px;font-weight:400;line-height:1;transform:rotate(0deg);transition:transform .14s ease}.library-group[open] summary::before{transform:rotate(90deg)}.library-group summary:hover{background:var(--hover);border-radius:8px}.library-group.dragging{opacity:.32}
 .library-group-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}.library-group-count{margin-left:auto;color:var(--muted);font-size:11px;font-weight:400}.library-items{padding:0 4px 4px}
 /* Custom drag ghost: a floating clone that follows the pointer, replacing
    the browser's native (unstylable) HTML5 drag screenshot. Collapsed
    (.library-items hidden) since drags always start from a collapsed row. */
 .library-drag-ghost{position:fixed;left:0;top:0;z-index:9999;pointer-events:none;margin:0;border-radius:10px;background:var(--card,var(--bg));box-shadow:0 10px 28px color-mix(in srgb,#000 22%,transparent),0 2px 6px color-mix(in srgb,#000 12%,transparent);transform:scale(1.02) rotate(-1deg);opacity:.96;overflow:hidden}
 .library-drag-ghost .library-items{display:none}.library-drag-ghost summary{cursor:grabbing}
-.library-row{display:block;width:100%;padding:9px 9px 8px;border:0;border-radius:7px;background:transparent;color:var(--text);text-align:left;cursor:pointer}.library-row:hover{background:var(--finch-bg-hover,var(--bg))}.library-row-main,.library-row strong,.library-row-meta,.library-row-path{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.library-row strong{font-size:13px;line-height:1.35;font-weight:600}.library-row-meta{display:flex;align-items:center;gap:7px;margin-top:3px;color:var(--muted);font-size:11px;line-height:1.3}.library-row-path,.library-row time{color:var(--muted)}.library-row-path{flex:1}.library-row time{flex:none;opacity:.86}
+.library-row{display:block;width:100%;padding:9px 9px 8px;border:0;border-radius:7px;background:transparent;color:var(--text);text-align:left;cursor:pointer}.library-row:hover{background:var(--hover)}.library-row-main,.library-row strong,.library-row-meta,.library-row-path{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.library-row strong{font-size:13px;line-height:1.35;font-weight:600}.library-row-meta{display:flex;align-items:center;gap:7px;margin-top:3px;color:var(--muted);font-size:11px;line-height:1.3}.library-row-path,.library-row time{color:var(--muted)}.library-row-path{flex:1}.library-row time{flex:none;opacity:.86}
 @media(max-width:850px){body.app-view .stage{grid-template-columns:minmax(0,1fr) 6px min(var(--preview-width,480px),40vw)}.app-toolbar{gap:6px}.app-tool-label{padding:0 8px}}
 /* Keep the App View toolbar usable when the Finch window is narrow. Icon-only
    buttons retain their localized tooltip/aria label; only the two redundant

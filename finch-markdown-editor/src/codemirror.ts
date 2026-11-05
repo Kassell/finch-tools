@@ -1,4 +1,4 @@
-import { basicSetup, EditorView } from 'codemirror';
+import { EditorView } from 'codemirror';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { javascript } from '@codemirror/lang-javascript';
 import { json } from '@codemirror/lang-json';
@@ -7,8 +7,10 @@ import { html } from '@codemirror/lang-html';
 import { python } from '@codemirror/lang-python';
 import { sql } from '@codemirror/lang-sql';
 import { yaml } from '@codemirror/lang-yaml';
+import { mermaid } from 'codemirror-lang-mermaid';
+import { infographicLanguageSupport } from './infographic';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
-import { HighlightStyle, LanguageDescription, LanguageSupport, StreamLanguage, syntaxHighlighting, syntaxTree } from '@codemirror/language';
+import { HighlightStyle, LanguageDescription, LanguageSupport, StreamLanguage, syntaxHighlighting, syntaxTree, defaultHighlightStyle, foldGutter, indentOnInput, bracketMatching, foldKeymap } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import {
   insertEmptyMarkdownTable,
@@ -18,9 +20,10 @@ import {
   TableTheme,
 } from 'codemirror-markdown-tables';
 import { Compartment, EditorState, RangeSet, RangeSetBuilder, StateEffect, StateField, Transaction, type Extension, type Text } from '@codemirror/state';
-import { indentLess, indentMore, indentWithTab, defaultKeymap, historyKeymap } from '@codemirror/commands';
+import { indentLess, indentMore, indentWithTab, defaultKeymap, historyKeymap, history } from '@codemirror/commands';
 import { searchKeymap } from '@codemirror/search';
-import { autocompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete';
+import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, type Completion, type CompletionContext } from '@codemirror/autocomplete';
+import { lintKeymap } from '@codemirror/lint';
 import {
   Decoration,
   type DecorationSet,
@@ -31,6 +34,13 @@ import {
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
+  dropCursor,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  highlightSpecialChars,
+  lineNumbers,
+  rectangularSelection,
+  crosshairCursor,
 } from '@codemirror/view';
 
 interface EditorSelectionInfo {
@@ -99,6 +109,8 @@ interface MarkdownEditorOptions {
    * Return true to consume the key (the host opens its own prompt bar in
    * place of the space that would have been typed), false to type normally. */
   onAiHintTrigger?(info: { line: number; rect: { top: number; bottom: number; left: number; right: number } }): boolean;
+  /** The user clicked the active App View rewrite indicator to stop its exact turn. */
+  onAiWorkingCancel?(): void;
 }
 
 // --- Font-size model ---------------------------------------------------
@@ -114,6 +126,59 @@ interface MarkdownEditorOptions {
 const CM_ROOT_PX = 16;
 const CM_LINE_WIDTH = '50rem';
 const CM_LINE_MAX_WIDTH = '88%';
+// How far a selection highlight may bleed past the text column on each side.
+// This is purely selection geometry: CodeMirror measures full-line selection
+// rects against `.cm-content`'s *border* box, while lines (and therefore the
+// text column, code-fence backgrounds and active-line highlight) fill its
+// *content* box. Carrying the bleed as horizontal padding widens the former
+// without moving the latter — raise it for a roomier selection box, set it
+// to '0px' to have the highlight stop exactly at the column edge.
+const CM_SELECTION_BLEED = '0px';
+
+// CodeMirror's `basicSetup` (from the `codemirror` package) includes
+// `drawSelection()`, which hides the browser's native selection and paints
+// its own full-width rectangles. That is precisely why a multi-line
+// selection highlights the *entire* line — blank lines and the empty space
+// after the last character included. The user wants the selection box to
+// hug only the text actually selected, so we rebuild `basicSetup` here and
+// simply omit `drawSelection()`. Native selection then takes over, which
+// naturally stays within the characters (no full-line fill); see the
+// `.cm-content ::selection` rules in the theme below for its colours.
+// Everything else mirrors `basicSetup` exactly so no other behaviour
+// (line numbers, history, folding, code highlighting, keymap, …) changes.
+const markdownEditorSetup = [
+  lineNumbers(),
+  highlightActiveLineGutter(),
+  highlightSpecialChars(),
+  history(),
+  foldGutter(),
+  dropCursor(),
+  EditorState.allowMultipleSelections.of(true),
+  indentOnInput(),
+  syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+  bracketMatching(),
+  closeBrackets(),
+  autocompletion(),
+  rectangularSelection(),
+  crosshairCursor(),
+  highlightActiveLine(),
+  // `highlightSelectionMatches()` (part of basicSetup) is intentionally NOT
+  // included: it wraps every other occurrence of the selected word in a
+  // `.cm-selectionMatch` span. Inside a fenced-code block those extra spans
+  // hit the code-row font rules and could compound, but more importantly the
+  // project has always suppressed the visual (its background is transparent)
+  // — selecting prose was silently re-highlighting matching code. Dropping it
+  // removes the span entirely so nothing can disturb the code block.
+  keymap.of([
+    ...closeBracketsKeymap,
+    ...defaultKeymap,
+    ...searchKeymap,
+    ...historyKeymap,
+    ...foldKeymap,
+    ...completionKeymap,
+    ...lintKeymap,
+  ]),
+];
 
 // Heading sizes, and the matching line-number band, derive from this one
 // table so the two sides cannot drift apart. See `headingGutterBandEm` for
@@ -252,7 +317,7 @@ const finchTheme = EditorView.theme({
   '&': {
     height: '100%',
     color: 'var(--text)',
-    backgroundColor: 'var(--card)',
+    backgroundColor: 'var(--bg)',
     fontSize: `${CM_ROOT_PX}px`,
   },
   '.cm-foldGutter':{display:'none !important'},
@@ -272,32 +337,72 @@ const finchTheme = EditorView.theme({
     // the 14px tier render at ~12.6px.
   },
   '.cm-content': {
-    padding: '48px 0',
+    // Focus mode overrides this with a viewport-sized value (see
+    // computeFocusPadding) so the first/last line can still scroll all the
+    // way to the vertical center; '48px' is the normal, non-focus default.
+    padding: 'var(--md-focus-pad-y, 48px) 0',
     caretColor: 'var(--text)',
     minHeight: '100%',
     // Let the content flex down with a narrow panel instead of retaining the
     // intrinsic width of its longest line.
     minWidth: '0',
+    // Anchors the click-target bleed below.
+    position: 'relative',
   },
-  // Keep `.cm-line` full-width so CodeMirror's active-line, selection and
-  // search layers paint edge-to-edge. A responsive inner gutter leaves the
-  // readable text column at most 750px wide on wide panes, but collapses to
-  // 24px on either side on narrow panes — no fixed line width, no overflow.
+  // The readable column lives on `.cm-content`, NOT on `.cm-line`. That is
+  // load-bearing for selection: CodeMirror's drawSelection paints full-line
+  // rects between `contentRect.left/right` (± the *first* line's horizontal
+  // padding) — see rectanglesForRange() in @codemirror/view. With the width
+  // on `.cm-line` instead, `.cm-content` stayed full-width and every
+  // multi-line selection bled well past the text column on both sides.
+  // Sizing the content element itself makes CodeMirror measure exactly the
+  // column it should paint. Per-line backgrounds (active line, code fence)
+  // keep hugging the column too, since a line now simply fills its parent.
   // The `:not()` guard is load-bearing: a selected table cell mounts an
   // embedded CodeMirror that inherits this editor's theme classes, so
-  // without it the 40rem reading-column width would leak into every cell,
+  // without it the reading-column width would leak into every cell,
   // inflate the cell's min-content, and grow the whole table on selection.
+  '.cm-content:not(.tbl-table-widget .cm-content)': {
+    // Width and max-width describe the *border* box, so both carry the bleed
+    // on top of the intended column: the content box — which the lines fill —
+    // still measures exactly min(CM_LINE_WIDTH, CM_LINE_MAX_WIDTH).
+    boxSizing: 'border-box',
+    paddingInline: CM_SELECTION_BLEED,
+    width: `calc(${CM_LINE_WIDTH} + 2 * ${CM_SELECTION_BLEED})`,
+    maxWidth: `calc(${CM_LINE_MAX_WIDTH} + 2 * ${CM_SELECTION_BLEED})`,
+    marginInline: 'auto',
+    // CodeMirror's base theme sets flex-grow:2/flex-shrink:0, which would
+    // stretch the column back to full width and refuse to shrink inside a
+    // narrow pane.
+    flexGrow: '0',
+    flexShrink: '1',
+  },
+  // Narrowing `.cm-content` also narrows the editor's click target, so
+  // clicking beside a line (a habit that used to place the caret at the
+  // nearest position) would fall on the inert scroller instead. Bleed a
+  // transparent child box out to either side: the event target stays
+  // `.cm-content`, so CodeMirror's own mousedown handling resolves it
+  // through posAtCoords exactly as before, while getBoundingClientRect —
+  // and therefore the selection geometry above — still measures only the
+  // column. Lines are position:relative and come later in DOM order, so
+  // they keep painting and hit-testing above this box; `.cm-gutters`
+  // (z-index 200) does too, and `.cm-scroller`'s overflow clips the bleed.
+  '.cm-content:not(.tbl-table-widget .cm-content)::before': {
+    content: '""',
+    position: 'absolute',
+    top: '0',
+    bottom: '0',
+    left: '-100%',
+    right: '-100%',
+  },
   '.cm-line:not(.tbl-table-widget .cm-line)': {
-    // '--md-line-pad': 'max(24px, calc((100% - 750px) / 2))',
     boxSizing: 'border-box',
     // Anchor the blank-line AI hint to the line's final laid-out box. The
     // generated hint must be absolute because CodeMirror puts a literal
     // <br> in every empty contenteditable line; an inline ::after can only
     // flow after that <br>, i.e. onto a second visual row.
     position: 'relative',
-    width: CM_LINE_WIDTH,
-    maxWidth: CM_LINE_MAX_WIDTH,
-    marginInline: 'auto',
+    width: '100%',
     // Line spacing comes from CSS tokens so the toolbar's comfortable-
     // writing toggle can switch them without touching CodeMirror's managed
     // classes: CM rebuilds view.dom.className on updates, which would wipe
@@ -327,7 +432,10 @@ const finchTheme = EditorView.theme({
   '.cm-content > .tbl-table-widget': {
     boxSizing: 'border-box',
     width: 'auto !important',
-    maxWidth: `min(${CM_LINE_WIDTH}, ${CM_LINE_MAX_WIDTH}) !important`,
+    // `.cm-content` already *is* the readable column, so filling it is the
+    // same cap the old min(50rem, 88%) expressed back when content was
+    // full-width.
+    maxWidth: '100% !important',
     marginInline: 'auto !important',
     padding: '12px 16px 12px 6px !important',
   },
@@ -340,28 +448,36 @@ const finchTheme = EditorView.theme({
     width: 'auto !important',
     maxWidth: '100%',
   },
-  // The selected cell's embedded editor must render at exactly the body
-  // size the surrounding table already shows. Its own root carries the
-  // copied theme base (a fixed 16px), which tracks neither the root
-  // editor's inline font-size (the toolbar font-size menu writes it there)
-  // nor the 0.9em body ratio — so `inherit` from the DOM position is the
-  // only value that stays correct across every menu size. The package's
-  // `--tbl-style-font-size: inherit` then cascades it down to the
-  // scroller/content/line elements unchanged.
-  '.tbl-cell-editor .cm-editor .cm-line': {
-    fontSize: '0.9rem',
-    fontFamily: 'var(--md-editor-font-family, var(--finch-font-mono))',
+  // Cell text must track the toolbar's font-size tier exactly like body text
+  // does, and the two elements that could break that chain are both roots:
+  //
+  // · A static cell is rendered by the table package with
+  //   `font-size: var(--tbl-style-font-size)`, whose default is `inherit`, so
+  //   it follows the editor root's inline tier on its own. Hardcoding a size
+  //   here — `0.9rem`, measured against the *document* root rather than the
+  //   editor's tier — pinned every cell to 14.4px at all three tiers.
+  // · The cell's inline editor is a second CodeMirror instance, and it is
+  //   created with the root editor's theme classes, so the theme's `&` base
+  //   size (a flat 16px) applies to it and nothing inside it can inherit the
+  //   tier. Inherit from the DOM position instead: the cell it sits in already
+  //   renders at the tier size, and the package's own rules cascade it down to
+  //   the scroller/content/line unchanged.
+  //
+  // The font family needs no rule either: the table package reads it from
+  // `--tbl-style-font-family`, which `finchTableStyle` points at
+  // `--md-editor-font-family`.
+  '.tbl-cell-editor .cm-editor': {
+    fontSize: 'inherit',
   },
-  // Keep the selected cell's editable text at the same body size: with the
-  // 0.9em chain gone, `inherit` tracks the root editor's inline font-size
-  // (the menu tier) through the DOM, matching the static cells exactly.
-  // An earlier 0.9em here compensated for the old double-scaling chain.
-  // '.tbl-cell-editor .cm-editor .cm-content': {
-  //   fontSize: '0.8rem',
-  // },
-  '.tbl-cell-view': {
-    fontSize: '0.9rem',
-    fontFamily: 'var(--md-editor-font-family, var(--finch-font-mono))',
+  // The rendered in-cell preview is an extra sibling of the package's own
+  // `.tbl-cell-view` (see installStaticTableCellPreview), so the package's
+  // element steps aside with CSS instead of being rewritten. While a cell is
+  // being edited the package hides its static view; the preview follows.
+  '.tbl-cell:has(> .tbl-cell-view[data-md-preview]) > .tbl-cell-view:not([data-md-preview])': {
+    display: 'none',
+  },
+  '.tbl-cell:has(.tbl-cell-editor) > .tbl-cell-view[data-md-preview]': {
+    display: 'none',
   },
   // Tint the active cell / row / column boundary against dark skins. The
   // outline itself keeps the package's default 2px width — its ::after
@@ -561,12 +677,13 @@ const finchTheme = EditorView.theme({
     // Keep the code surface translucent: CodeMirror paints its custom
     // selection layer behind line content, so an opaque `var(--card)` mix
     // would cover the selection completely.
-    backgroundColor: 'color-mix(in srgb, var(--text) 8%, transparent)',
+    backgroundColor: 'color-mix(in srgb, var(--text) 4%, transparent)',
     lineHeight: codeEm(CODE_LINE_RATIO) + ' !important',
     fontFamily: 'var(--finch-font-mono)',
     paddingTop: '0 !important',
     paddingBottom: '0 !important',
-    width: 'calc(50rem - 30px) !important',
+    width: '99% !important',
+    // width: 'calc(49rem) !important',
     paddingInline: '24px',
     // Empty-line AI hint is absolutely positioned, so it does not inherit
     // padding layout. Give it the same content-start offset as code text.
@@ -575,11 +692,9 @@ const finchTheme = EditorView.theme({
     // everything else. A fixed px here would also freeze the `em` basis of
     // the line-height above and pull the gutter out of alignment.
     fontSize: `${CODE_FONT_SCALE}em !important`,
+    marginInline: 'auto',
   },
 
-  '.cm-line.cm-md-code-line span': {
-    fontSize: codeEm(CODE_TEXT_SCALE) + ' !important',
-  },
   '.cm-line.cm-md-code-open': {
     borderRadius: '8px 8px 0 0',
     height: codeEm(CODE_FENCE_BAR_RATIO),
@@ -593,16 +708,23 @@ const finchTheme = EditorView.theme({
     paddingInline: '12px'
   },
   '.cm-md-code-fence-empty': { opacity: '0' },
+  // Floated to the right of the (otherwise emptied) fence-open line. Its
+  // total vertical footprint (height + top/bottom margin) is sized to fit
+  // exactly inside that line's own `height` (see CODE_FENCE_BAR_RATIO
+  // above) — a taller footprint here previously poked past the line's own
+  // box and got sliced by whatever paints next, so keep these three
+  // numbers (18 + 2 + 2 = 22) matching CODE_FENCE_BAR_RATIO if either one
+  // ever changes.
   '.cm-md-code-copy': {
     float: 'right',
-    height: '20px',
-    margin: '4px -7px',
-    padding: '0 7px',
+    height: '16px',
+    margin: '3px -9px',
+    padding: '0 4px',
     border: '0px',
     borderRadius: '6px',
     color: 'var(--muted)',
     backgroundColor: 'color-mix(in srgb, var(--card) 88%, transparent)',
-    font: '11px var(--finch-font-mono)',
+    font: '10px var(--finch-font-mono)',
     cursor: 'pointer',
   },
   '.cm-md-code-copy:hover': { color: 'var(--text)', backgroundColor: 'var(--card)' },
@@ -633,13 +755,12 @@ const finchTheme = EditorView.theme({
   // height (headings, code, etc.) so nothing else needs to change.
   '.cm-line.cm-md-gap': {},
   '.cm-line.cm-md-gap-heading': {},
-  // `basicSetup` enables same-word selection matches. Keep the primary text
-  // selection, but suppress those secondary match rectangles entirely.
-  '.cm-selectionMatch': { backgroundColor: 'transparent !important' },
+  // `highlightSelectionMatches` was removed from `markdownEditorSetup`
+  // (see its comment), so `.cm-selectionMatch` no longer appears.
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--text)' },
   '.cm-gutters': {
     color: 'var(--muted)',
-    backgroundColor: 'var(--card)',
+    backgroundColor: 'var(--bg)',
     borderRight: '0px',
     // `.cm-gutters` is a direct child of `.cm-editor` (a sibling of
     // `.cm-scroller`, not nested inside it), so this `em` resolves against
@@ -774,6 +895,13 @@ const finchTheme = EditorView.theme({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    cursor: 'pointer',
+  },
+  '.cm-ai-working-spinner:hover svg': { animation: 'none' },
+  '.cm-ai-working-spinner:focus-visible': {
+    outline: '1px solid var(--accent)',
+    outlineOffset: '-1px',
+    borderRadius: '3px',
   },
   '.cm-ai-gutter svg': {
     width: '13px',
@@ -878,15 +1006,15 @@ const finchTheme = EditorView.theme({
     content: 'var(--cm-ai-hint-code, "")',
   },
   '.cm-activeLine': {
-    backgroundColor: 'color-mix(in srgb, var(--text) 7%, transparent)',
+    backgroundColor: 'color-mix(in srgb, var(--text) 4%, transparent)',
     boxShadow: [
-      '-25vw 0 color-mix(in srgb, var(--text) 7%, transparent)',
-      '25vw 0 color-mix(in srgb, var(--text) 7%, transparent)',
+      '-25vw 0 color-mix(in srgb, var(--text) 4%, transparent)',
+      '25vw 0 color-mix(in srgb, var(--text) 4%, transparent)',
     ].join(', '),
   },
   '.cm-activeLineGutter': {
     color: 'var(--text) !important',
-    backgroundColor: 'color-mix(in srgb, var(--text) 7%, transparent)',
+    backgroundColor: 'color-mix(in srgb, var(--text) 4%, transparent)',
   },
   // Focus mode ("专注" toolbar toggle): non-active lines fade to 70% so the
   // cursor's line stands out while writing. Driven by a CSS token on the
@@ -906,8 +1034,34 @@ const finchTheme = EditorView.theme({
   '.tbl-table-widget .tbl-cell[data-selected], .tbl-table-widget .tbl-cell[data-selected] .cm-line': {
     opacity: '1',
   },
-  '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground': {
-    backgroundColor: 'color-mix(in srgb, var(--accent) 34%, transparent)',
+  // `drawSelection()` is intentionally omitted from `markdownEditorSetup`
+  // (see its comment) so the browser paints the selection natively. Native
+  // selection has no `.cm-selectionBackground` element, so it could be styled
+  // via `::selection` — but native selection vanishes the instant the editor
+  // loses focus (e.g. the rewrite Composer is focused). The persistent
+  // highlight is therefore drawn by `selectionHighlightPlugin` as a
+  // `.cm-md-selection` mark decoration, which is focus-independent. To keep
+  // that as the single source of truth we neutralise the native background
+  // here (set it to transparent rather than removing the rule, so the colour
+  // is still applied to any text the plugin may not cover).
+  '& .cm-content ::selection, & .cm-content::selection': {
+    backgroundColor: 'transparent',
+  },
+  '& .cm-content ::-moz-selection, & .cm-content::-moz-selection': {
+    backgroundColor: 'transparent',
+  },
+  '& .cm-content .cm-md-selection': {
+    backgroundColor: 'color-mix(in srgb, var(--accent) 24%, transparent)',
+    borderRadius: '4px',
+    // The mark must be a pure visual overlay: no font-size / line-height so
+    // selected text keeps its exact glyph rhythm. `white-space: pre-wrap`
+    // (the same as CodeMirror's own .cm-content default) is the one property
+    // it does need: without it the browser may render a run of selected
+    // spaces under the element's inherited white-space, which collapses or
+    // re-metrics them so the highlighted whitespace looks narrower than the
+    // spaces around it. pre-wrap keeps every space intact and still allows
+    // long prose to wrap. Code rows override white-space to `pre` below.
+    whiteSpace: 'pre-wrap',
   },
   '.cm-panels': {
     color: 'var(--text)',
@@ -1083,7 +1237,9 @@ const fencedCodeLanguages = [
   LanguageDescription.of({ name: 'JSX', alias: ['jsx'], extensions: ['jsx'], support: javascript({ jsx: true }) }),
   LanguageDescription.of({ name: 'TypeScript', alias: ['ts'], extensions: ['ts'], support: javascript({ typescript: true }) }),
   LanguageDescription.of({ name: 'TSX', alias: ['tsx'], extensions: ['tsx'], support: javascript({ jsx: true, typescript: true }) }),
-  LanguageDescription.of({ name: 'JSON', alias: ['json', 'json5'], extensions: ['json'], support: json() }),
+  LanguageDescription.of({ name: 'JSON', alias: ['json', 'json5'], extensions: ['json', 'json5'], support: json() }),
+  LanguageDescription.of({ name: 'Mermaid', alias: ['mermaid', 'mmd'], extensions: ['mermaid', 'mmd'], support: mermaid() }),
+  LanguageDescription.of({ name: 'Infographic', alias: ['infographic'], extensions: ['infographic'], support: new LanguageSupport(infographicLanguageSupport) }),
   LanguageDescription.of({ name: 'CSS', alias: ['css'], extensions: ['css'], support: css() }),
   LanguageDescription.of({ name: 'HTML', alias: ['html', 'htm', 'xml', 'svg'], extensions: ['html'], support: html() }),
   LanguageDescription.of({ name: 'Python', alias: ['python', 'py'], extensions: ['py'], support: python() }),
@@ -1118,9 +1274,14 @@ const markdownHighlight = HighlightStyle.define([
   { tag: [tags.function(tags.variableName), tags.labelName], color: '#61afef' },
   { tag: [tags.color, tags.constant(tags.name), tags.standard(tags.name), tags.bool], color: '#d19a66' },
   { tag: [tags.definition(tags.name), tags.separator], color: 'var(--text)' },
-  { tag: [tags.typeName, tags.className, tags.number, tags.changed, tags.annotation, tags.modifier, tags.self, tags.namespace], color: '#e5c07b' },
-  { tag: [tags.operator, tags.operatorKeyword, tags.escape, tags.regexp, tags.special(tags.string)], color: '#56b6c2' },
-  { tag: tags.string, color: '#98c379' },
+  { tag: [tags.typeName, tags.className, tags.number, tags.changed, tags.annotation, tags.modifier, tags.self, tags.namespace], color: '#d3b070' },
+  { tag: [tags.operator, tags.operatorKeyword, tags.escape, tags.regexp, tags.special(tags.string), tags.contentSeparator], color: '#56b6c2' },
+  { tag: tags.string, color: '#88b06a' },
+  // Bare variableName and controlKeyword are only emitted by the mermaid
+  // grammar (node IDs, message/actor labels, sequence control keywords) —
+  // regular prose never hits them. Keep them on the same One Dark palette.
+  { tag: tags.variableName, color: '#61afef' },
+  { tag: tags.controlKeyword, color: '#c678dd' },
   { tag: tags.comment, color: 'var(--muted)', fontStyle: 'italic' },
   { tag: tags.invalid, color: '#fff', backgroundColor: '#e06c75' },
 ]);
@@ -1691,6 +1852,45 @@ const imageWrapperExtension = StateField.define<DecorationSet>({
  * Keeping this out of the decoration set is what allows the widget to survive
  * caret movement. The class and focus are applied imperatively, which is the
  * same split Obsidian uses for its embeds. */
+// Persistent selection highlight.
+//
+// The editor deliberately omits `drawSelection()` and uses the browser's
+// native selection so the box hugs the text (no full-line fill). Native
+// selection however disappears the moment the editor loses focus — e.g. when
+// the AI rewrite Composer is focused — so the highlight would vanish. This
+// plugin paints the selection again as a mark decoration driven solely by
+// `state.selection`, which is independent of focus. A mark wraps only the
+// selected characters (never a full line), and since it is not tied to focus
+// it stays visible before AND after the editor blurs. The native `::selection`
+// background is set to transparent in the theme so the two don't stack.
+const selectionMark = Decoration.mark({ class: 'cm-md-selection' });
+const selectionHighlightPlugin = ViewPlugin.fromClass(class {
+  decorations: DecorationSet;
+
+  constructor(view: EditorView) {
+    this.decorations = this.compute(view);
+  }
+
+  update(update: ViewUpdate): void {
+    if (update.selectionSet || update.docChanged || update.viewportChanged) {
+      this.decorations = this.compute(update.view);
+    }
+  }
+
+  private compute(view: EditorView): DecorationSet {
+    const { state } = view;
+    const ranges = state.selection.ranges;
+    let builder: RangeSetBuilder<Decoration> | null = null;
+    for (const range of ranges) {
+      // Ignore empty (caret-only) selections.
+      if (range.from >= range.to) continue;
+      if (!builder) builder = new RangeSetBuilder<Decoration>();
+      builder.add(range.from, range.to, selectionMark);
+    }
+    return builder ? builder.finish() : Decoration.none;
+  }
+}, { decorations: (plugin) => plugin.decorations });
+
 const imageSelectionOutline = ViewPlugin.fromClass(class {
   constructor(view: EditorView) { this.sync(view); }
 
@@ -1991,7 +2191,27 @@ class AiWorkingStartMarker extends GutterMarker {
     const root = aiWorkingMarkRoot();
     const spinner = document.createElement('span');
     spinner.className = 'cm-ai-working-spinner';
-    spinner.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>';
+    spinner.setAttribute('role', 'button');
+    spinner.setAttribute('tabindex', '0');
+    spinner.setAttribute('aria-label', 'Stop rewrite');
+    spinner.title = 'Stop rewrite';
+    const setStopIcon = (stop: boolean) => {
+      spinner.innerHTML = stop
+        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>';
+    };
+    setStopIcon(false);
+    spinner.addEventListener('mouseenter', () => setStopIcon(true));
+    spinner.addEventListener('mouseleave', () => setStopIcon(false));
+    const cancel = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      spinner.dispatchEvent(new CustomEvent('finch:aiWorkingCancel', { bubbles: true }));
+    };
+    spinner.addEventListener('click', cancel);
+    spinner.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') cancel(event);
+    });
     root.appendChild(spinner);
     if (this.hasMore) root.appendChild(aiWorkingRail('cm-ai-working-rail-below'));
     return root;
@@ -2303,10 +2523,19 @@ function collectTableLines(view: EditorView): Set<number> {
  * recreated" but does not guard against it.
  *
  * CodeMirror only destroys dropped tiles after the new DOM is in place, so an
- * element that is still connected is by definition one that was reused. Adding
- * that check makes the stale destroy a no-op, and implementing `updateDOM`
- * lets a genuine pairing hand the mounted component to the incoming widget
- * instead of tearing it down and rebuilding it. */
+ * element that is still connected is by definition one that was reused. That
+ * single check makes the stale destroy a no-op.
+ *
+ * Deliberately NOT implemented here: `updateDOM`. Handing a rebuilt widget the
+ * element a previous instance is rendering into keeps a component whose props
+ * are frozen at the moment of the rebuild, and the package stops feeding that
+ * old description: `EditorState.field(tableField).tables` holds the *new*
+ * descriptions, and the selection is written into those. The visible table
+ * then keeps whatever selection state it had — a cell stays tinted and
+ * outlined, its editor stays mounted, while the document no longer has any
+ * table selection at all (reproduced by rewriting a table range with the text
+ * it already contains, which is exactly what `healBlankTableWidgets` does).
+ * A rebuilt widget must therefore mount its own component. */
 function hardenTableWidgetPrototype(view: EditorView): boolean {
   let widget: any = null;
   const visit = (set: any) => {
@@ -2332,26 +2561,6 @@ function hardenTableWidgetPrototype(view: EditorView): boolean {
     // would blank a table the user is looking at.
     if (dom?.isConnected) return;
     originalDestroy?.call(this, dom);
-  };
-
-  proto.updateDOM = function (dom: HTMLElement, _view: EditorView, previous: any): boolean {
-    // Never claim an element the package has already emptied, otherwise the
-    // blank state would be preserved instead of repaired.
-    if (!dom?.querySelector('.tbl-table-wrapper')) return false;
-    if (previous === this) { this.widgetElement = dom; return true; }
-    const mine = this.tableDescription;
-    const theirs = previous?.tableDescription;
-    if (!mine || !theirs) return false;
-    if (mine.from !== theirs.from || mine.to !== theirs.to) return false;
-    if (!mine.table?.text?.eq?.(theirs.table?.text)) return false;
-    // Take ownership of the mounted component so the outgoing instance can no
-    // longer tear it down.
-    this.widgetElement = dom;
-    this.destroyWidgetElement = previous.destroyWidgetElement;
-    this.height = previous.height;
-    previous.destroyWidgetElement = undefined;
-    previous.widgetElement = undefined;
-    return true;
   };
   return true;
 }
@@ -3006,65 +3215,122 @@ function escapeTableCellHtml(text: string): string {
 function renderStaticTableCellMarkdown(source: string): string {
   const tokens: string[] = [];
   const token = (html: string) => `\u0000${tokens.push(html) - 1}\u0000`;
+  // Delimiters are emitted as tokens so the punctuation one rule wrote can
+  // never be read back by a later rule: `**bold**` used to be re-matched by
+  // the single-asterisk emphasis rule, leaving a stray `*` visible after the
+  // bold text. The text between the delimiters stays in the buffer, so nested
+  // emphasis inside bold still renders.
+  const delimiter = (text: string) => token(`<span class="cm-md-delimiter">${text}</span>`);
+  // Tokens are expanded recursively: a rule can nest another rule's tokens
+  // (inline code wraps its backticks), and a single pass would leave the inner
+  // placeholder visible as raw text.
+  const expand = (html: string): string =>
+    html.replace(/\u0000(\d+)\u0000/g, (_match, index) => expand(tokens[Number(index)]!));
   let html = escapeTableCellHtml(source);
 
   html = html.replace(/`([^`\n]+)`/g, (_match, code) => token(
-    '<span class="cm-md-delimiter">`</span>'
+    delimiter('`')
     + `<span class="cm-md-inline-code">${code}</span>`
-    + '<span class="cm-md-delimiter">`</span>',
+    + delimiter('`'),
   ));
   // Resolve a Markdown link before bare URLs, otherwise the URL token would
   // leave its surrounding `[label]()` syntax visible in the static cell.
   html = html.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/gi, (_match, label, url) => token(
-    '<span class="cm-md-delimiter">[</span>'
+    delimiter('[')
     + `<span class="cm-md-link" data-md-href="${url}" role="link" title="${url}">${label}</span>`
-    + '<span class="cm-md-delimiter">](</span>'
-    + `<span class="cm-md-delimiter">${url}</span>`
-    + '<span class="cm-md-delimiter">)</span>',
+    + delimiter('](')
+    + delimiter(url)
+    + delimiter(')'),
   ));
   html = html.replace(/https?:\/\/[^\s<]+/gi, (url) => token(
     `<span class="cm-md-link" data-md-href="${url}" role="link" title="${url}">${url}</span>`,
   ));
   html = html.replace(/==(?=\S)([^<>\n]+?)(?<=\S)==/g, (_match, text) =>
-    `<span class="cm-md-delimiter">==</span><mark class="cm-md-mark">${text}</mark><span class="cm-md-delimiter">==</span>`,
+    delimiter('==') + `<mark class="cm-md-mark">${text}</mark>` + delimiter('=='),
   );
-  html = html.replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, (_match, delimiter, text) =>
-    `<span class="cm-md-delimiter">${delimiter}</span><strong class="cm-md-strong">${text}</strong><span class="cm-md-delimiter">${delimiter}</span>`,
+  html = html.replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, (_match, marker, text) =>
+    delimiter(marker) + `<strong class="cm-md-strong">${text}</strong>` + delimiter(marker),
   );
   html = html.replace(/\*(?=\S)([^*\n]*?\S)\*/g, (_match, text) =>
-    `<span class="cm-md-delimiter">*</span><em class="cm-md-emphasis">${text}</em><span class="cm-md-delimiter">*</span>`,
+    delimiter('*') + `<em class="cm-md-emphasis">${text}</em>` + delimiter('*'),
   );
   html = html.replace(/_(?=\S)([^_\n]*?\S)_/g, (_match, text) =>
-    `<span class="cm-md-delimiter">_</span><em class="cm-md-emphasis">${text}</em><span class="cm-md-delimiter">_</span>`,
+    delimiter('_') + `<em class="cm-md-emphasis">${text}</em>` + delimiter('_'),
   );
-  return html.replace(/\u0000(\d+)\u0000/g, (_match, index) => tokens[Number(index)]!);
+  return expand(html);
 }
 
 let tablePreviewMouseSelecting = false;
 
+/* Inline-Markdown rendering for the table's *static* cells.
+ *
+ * The package renders a non-edited cell as plain text inside `.tbl-cell-view`:
+ * its Svelte component keeps a comment anchor in there and inserts/replaces the
+ * raw text nodes around it. An earlier version of this patch wrote the rendered
+ * preview into that element with `innerHTML`, which threw the anchor away —
+ * from then on every update the component made was inserted into a detached
+ * tree, so the visible cell kept the text it had when the preview was first
+ * painted. A row/column move, a sort, a duplicate or a clear all change cell
+ * text without rebuilding the widget (the widget patches the document, and the
+ * document round-trip reuses the same component), so those edits silently never
+ * showed up until the panel was reopened.
+ *
+ * So the preview now lives *outside* the package's element: it is an extra
+ * sibling that carries the same `tbl-cell-view` class (identical metrics,
+ * padding, wrapping and header colors) and the package's own element is hidden
+ * by CSS while the preview exists. Nothing the package owns is moved, removed
+ * or rewritten, its anchor stays put and its text keeps tracking the model,
+ * which is what lets the preview re-render from the live text.
+ */
+const CELL_PREVIEW_ATTR = 'data-md-preview';
+
 function installStaticTableCellPreview(root: HTMLElement): () => void {
-  const render = () => root.querySelectorAll<HTMLElement>('.tbl-cell-view').forEach((cell) => {
-    const cellRoot = cell.closest<HTMLElement>('.tbl-cell');
-    const editorContent = cellRoot?.querySelector<HTMLElement>('.tbl-cell-editor .cm-content');
-    const alreadyRendered = !!cell.querySelector('[data-md-preview]');
-
-    // A selected cell keeps its static sibling hidden while its embedded CM
-    // editor changes. Cache that editor's source on the owning cell; when the
-    // editor is later unmounted, the old static DOM must not win over it.
-    if (editorContent) cellRoot!.dataset.mdPreviewEditedSource = editorContent.textContent || '';
-    const source = editorContent
-      ? editorContent.textContent || ''
-      : alreadyRendered
-        ? (cellRoot?.dataset.mdPreviewEditedSource ?? cell.textContent ?? '')
-        : cell.textContent || '';
-
-    if (cell.dataset.mdPreviewSource === source && alreadyRendered) return;
-    cell.dataset.mdPreviewSource = source;
-    cell.innerHTML = `<span data-md-preview="true">${renderStaticTableCellMarkdown(source)}</span>`;
-  });
-  // Svelte can unmount the cell editor and restore its static sibling across
-  // several microtasks. Render on the next animation frame, after that DOM
-  // transition settles, instead of racing its intermediate static markup.
+  const render = () => {
+    root.querySelectorAll<HTMLElement>(`.tbl-cell-view:not([${CELL_PREVIEW_ATTR}])`).forEach((view) => {
+      const cell = view.closest<HTMLElement>('.tbl-cell');
+      if (!cell) return;
+      const source = view.textContent || '';
+      const html = renderStaticTableCellMarkdown(source);
+      const preview = cell.querySelector<HTMLElement>(`:scope > [${CELL_PREVIEW_ATTR}]`);
+      // Nothing to render in this cell (no links, emphasis, code or mark):
+      // leave the package's own text in place instead of hiding it behind an
+      // identical copy.
+      if (html === escapeTableCellHtml(source)) {
+        preview?.remove();
+        delete view.dataset.mdPreviewSource;
+        return;
+      }
+      if (preview) {
+        // Re-assert the markup when it drifted: the preview is editable (so
+        // the browser can put a caret in it), and a stray keystroke must not
+        // survive — the package's own view behaves the same way, because its
+        // text is rewritten from the model on every render.
+        if (view.dataset.mdPreviewSource === source && preview.innerHTML === html) return;
+        view.dataset.mdPreviewSource = source;
+        preview.innerHTML = html;
+        return;
+      }
+      view.dataset.mdPreviewSource = source;
+      const rendered = document.createElement('div');
+      rendered.className = 'tbl-cell-view';
+      rendered.setAttribute(CELL_PREVIEW_ATTR, 'true');
+      // Mirror the package's own cell view on the two points it is load-bearing
+      // for: the browser needs somewhere editable to drop the caret, and the
+      // package resolves a click/caret back to a cell by walking up to the
+      // nearest `data-component="CellView"`. With neither, a click on a
+      // rendered cell landed on an inert div and was discarded
+      // (`preventDefault` in the package's pointerdown), so the cell could not
+      // be selected or edited at all — only cells without Markdown, which keep
+      // the package's own element, still responded.
+      rendered.setAttribute('contenteditable', '');
+      rendered.setAttribute('data-component', 'CellView');
+      rendered.innerHTML = html;
+      view.after(rendered);
+    });
+  };
+  // The component replaces its text nodes across several microtasks, so render
+  // on the next animation frame, after that DOM transition settles, instead of
+  // racing its intermediate markup.
   let frame = 0;
   let pending = false;
   const scheduleRender = () => {
@@ -3490,13 +3756,69 @@ function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHan
     if (!focusModeEnabled || centerLineRaf || mouseSelecting) return;
     centerLineRaf = requestAnimationFrame(() => requestAnimationFrame(centerActiveLine));
   }
+  // `scrollIntoView({ block: 'center' })` can only center a line within the
+  // scroll room that actually exists — it never invents extra space. With
+  // the normal fixed 48px top/bottom padding, a caret on line 1 of a short
+  // document (or near the very end of any document) simply has nowhere left
+  // to scroll to, so it visibly sits above/below screen-center instead of on
+  // it. Fix: while focus mode is on, pad `.cm-content` top/bottom with
+  // exactly `(viewport height - one line's height) / 2`. That's the single
+  // number that makes a one-line document fill the viewport exactly (no
+  // pointless scrollbar) while still leaving the first/last line of any
+  // longer document precisely enough room to reach screen-center — the
+  // moment a second line exists, the document is one line taller than the
+  // viewport can hold without scrolling, which is exactly when a scrollbar
+  // (and the centering focus mode exists for) should show up.
+  //
+  // The line height must be the *actual* rendered box, not CodeMirror's own
+  // font-metric estimate (`view.defaultLineHeight`): that guess drifts from
+  // the real box by an amount that itself grows with font size/line-height
+  // (reported: fine at the smallest compact size, off by more at larger
+  // comfortable sizes). Measuring an actual `.cm-line` element's
+  // `getBoundingClientRect()` avoids that drift entirely.
+  function measureLineHeightPx(): number {
+    const line = (view.dom.querySelector('.cm-activeLine') || view.dom.querySelector('.cm-line')) as HTMLElement | null;
+    return line ? line.getBoundingClientRect().height : (view.defaultLineHeight || 0);
+  }
+  function applyFocusPadding() {
+    if (!focusModeEnabled) {
+      view.dom.style.removeProperty('--md-focus-pad-y');
+      view.requestMeasure();
+      return;
+    }
+    const viewportH = view.scrollDOM.clientHeight || 0;
+    const lineH = measureLineHeightPx();
+    // Deliberately not rounded: both sides share this one fractional value,
+    // so the two paddings stay in exact lockstep with each other and with
+    // the (also fractional) real line height — rounding either separately
+    // is what reintroduced a stray ~1px surplus/scrollbar before.
+    const pad = Math.max(0, (viewportH - lineH) / 2);
+    view.dom.style.setProperty('--md-focus-pad-y', `${pad}px`);
+    view.requestMeasure();
+  }
+  // Panel resizes (splitting the window, dragging the preview divider, DPI
+  // changes) change what "half the viewport" means, so keep the padding in
+  // sync while focus mode is active rather than only computing it once.
+  // Observer itself is created just below, once `view` exists.
+  let focusResizeObserver: ResizeObserver | null = null;
+  // A mouse click/drag places the caret deliberately — the user is looking
+  // right at that spot already, so snapping the view the instant the mouse
+  // comes up reads as a jarring yank instead of a smooth focus shift. Give
+  // it a beat (unlike typing/arrow-key moves, which center immediately) so
+  // it only kicks in once it's clear the user has settled there.
+  const MOUSE_CENTER_DELAY_MS = 300;
+  let mouseCenterDelayTimer = 0;
   // Attach on window so a drag that leaves the editor still ends cleanly.
   function onWindowMouseUp() {
     if (!mouseSelecting) return;
     mouseSelecting = false;
     tablePreviewMouseSelecting = false;
-    // The selection just settled — center once now.
-    scheduleCenterActiveLine();
+    // The selection just settled — center after the delay above.
+    if (mouseCenterDelayTimer) clearTimeout(mouseCenterDelayTimer);
+    mouseCenterDelayTimer = window.setTimeout(() => {
+      mouseCenterDelayTimer = 0;
+      scheduleCenterActiveLine();
+    }, MOUSE_CENTER_DELAY_MS);
     // A drag that crosses a table boundary is what empties the table widget,
     // so check for that damage once the drag is actually over (healing mid-
     // drag would dispatch a document change under the pointer).
@@ -3534,7 +3856,7 @@ function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHan
       // off or the caret is not on a blank line, and Space types normally.
       aiHintKeymap,
       markdownEditorKeymap,
-      basicSetup,
+      markdownEditorSetup,
       // Replace CodeMirror's generic text/keyword glyphs with actual Lucide
       // SVGs for slash blocks; non-Markdown completion sources simply render
       // no icon instead of falling back to the default key symbol.
@@ -3548,6 +3870,7 @@ function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHan
       aiAddedGutterField,
       aiWorkingGutter,
       aiHintPlugin,
+      selectionHighlightPlugin,
       markdownSupport,
       // Typing `|` on an empty line pops a table-size picker (2x2/3x3/4x4)
       // via CodeMirror's own autocompletion (basicSetup already includes
@@ -3574,6 +3897,11 @@ function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHan
         extensions: [
           cellMarkdownSupport,
           syntaxHighlighting(markdownHighlight),
+          // The cell editor is its own CodeMirror instance, so the persistent
+          // selection highlight must be registered here too — otherwise
+          // selecting text inside a table cell paints nothing (the plugin on
+          // the root view never sees the cell's selection).
+          selectionHighlightPlugin,
           keymap.of(defaultKeymap),
         ],
       }),
@@ -3643,6 +3971,19 @@ function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHan
   const disposeTableMenuI18n = installTableMenuI18n();
   const disposeStaticTableCellPreview = installStaticTableCellPreview(options.parent);
   const disposeTableWidgetKeeper = installTableWidgetKeeper(view);
+  const onAiWorkingCancel = () => options.onAiWorkingCancel?.();
+  view.dom.addEventListener('finch:aiWorkingCancel', onAiWorkingCancel);
+
+  // See applyFocusPadding above: keeps the focus-mode padding in sync with
+  // the panel's actual size (split-view resize, DPI change…).
+  if (typeof ResizeObserver !== 'undefined') {
+    focusResizeObserver = new ResizeObserver(() => {
+      if (!focusModeEnabled) return;
+      applyFocusPadding();
+      scheduleCenterActiveLine();
+    });
+    focusResizeObserver.observe(view.scrollDOM);
+  }
 
   // Height-map lookup for a line's top/bottom edge, expressed in the same
   // coordinate space as `scrollDOM.scrollTop`. `lineBlockAt` is used instead
@@ -3790,8 +4131,10 @@ function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHan
       // the rule inert when focus mode is off.
       focusModeEnabled = !!on;
       view.dom.style.setProperty('--md-focus-opacity', on ? '0.5' : '1');
+      // See applyFocusPadding: gives the first/last line real scroll room
+      // to reach screen-center, not just lines already surrounded by text.
+      applyFocusPadding();
       if (on) scheduleCenterActiveLine();
-      view.requestMeasure();
     },
     setAiWorkingLines(fromLine, toLine) {
       const active = fromLine > 0 && toLine >= fromLine;
@@ -3810,7 +4153,10 @@ function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHan
       return lineEdge(line);
     },
     destroy() {
+      view.dom.removeEventListener('finch:aiWorkingCancel', onAiWorkingCancel);
       if (centerLineRaf) { cancelAnimationFrame(centerLineRaf); centerLineRaf = 0; }
+      if (focusResizeObserver) { focusResizeObserver.disconnect(); focusResizeObserver = null; }
+      if (mouseCenterDelayTimer) { clearTimeout(mouseCenterDelayTimer); mouseCenterDelayTimer = 0; }
       if (externalHighlightTimer) { clearTimeout(externalHighlightTimer); externalHighlightTimer = 0; }
       window.removeEventListener('mouseup', onWindowMouseUp);
       disposeStaticTableCellPreview();

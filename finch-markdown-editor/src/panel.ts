@@ -32,6 +32,175 @@
     }
   };
 
+  // ---- Boot ----------------------------------------------------------
+  // Two things this page cannot know when it paints its first frame: the real
+  // `--finch-*` theme values (the platform injects them at webview dom-ready,
+  // i.e. after this script has already run) and whether the host is about to
+  // push a document. Painting regardless is what the user saw as: every open
+  // flashing the wrong palette for a beat, and entering App View flashing the
+  // empty-state home page before the document it was opened for.
+  //
+  // The two halves are handled differently, because they cost different
+  // things to get wrong:
+  //
+  //   * The surface has to be painted immediately — leaving the page blank
+  //     just hands the frame to the host's own "loading" placeholder, which
+  //     is a plain white screen. So panel.html paints its first frame from
+  //     the theme values this page saw last time (the inline script there),
+  //     and the platform tokens replace them the moment they land
+  //     (`adoptPlatformTheme` below, which also refreshes that cache). From
+  //     the second open onwards the first frame is therefore already the
+  //     current skin's colours and there is nothing left to flash.
+  //
+  //   * The content can afford to wait, so it does: `md-boot` (panel.css)
+  //     hides the app tree until the host has answered whether a document is
+  //     coming. Nothing is ever painted in the wrong palette, and the empty
+  //     state never flashes in front of a document that is about to arrive.
+  //
+  // Both waits have a timeout, and a page opened outside a Finch webview (no
+  // Bridge — local development in a plain browser) skips the content gate.
+  var bootThemeReady = false;
+  var bootStateReady = false;
+  var bootDone = false;
+  var bootThemeWatch = null;
+  // The tokens normally land within a frame or two of `dom-ready`, so this
+  // only ever fires if the platform never injected them at all.
+  var BOOT_THEME_TIMEOUT = 400;
+  // The host always answers `panelReady` with either a document or
+  // `lastFileUnavailable`, so this is a last-resort net, not a schedule.
+  var BOOT_STATE_TIMEOUT = 1500;
+  // Aliases panel.css resolves the platform tokens into; the same names are
+  // what the pre-paint cache in panel.html restores.
+  var THEME_ALIASES = ['bg', 'card', 'text', 'muted', 'border', 'accent', 'hover', 'active'];
+  var THEME_CACHE_KEY = 'md-theme-aliases';
+
+  function platformTokensPresent() {
+    try {
+      var style = getComputedStyle(document.documentElement);
+      return !!style.getPropertyValue('--finch-theme-mode').trim()
+        || !!style.getPropertyValue('--finch-bg-main').trim();
+    } catch (_) {
+      // Cannot read through to the tokens — never keep the page hidden over it.
+      return true;
+    }
+  }
+
+  function readThemeAliases() {
+    var values = {};
+    var style = getComputedStyle(document.documentElement);
+    for (var i = 0; i < THEME_ALIASES.length; i++) {
+      var name = THEME_ALIASES[i];
+      var value = style.getPropertyValue('--' + name).trim();
+      if (!value) return null;
+      values[name] = value;
+    }
+    return values;
+  }
+
+  // What is currently stored, so re-recording is a no-op unless the resolved
+  // colours really changed (a skin change — see the steady look-out below).
+  var themeCacheJson = null;
+  try { themeCacheJson = localStorage.getItem(THEME_CACHE_KEY); } catch (_) {}
+
+  function recordThemeAliases() {
+    var values = readThemeAliases();
+    if (!values) return;
+    var json = JSON.stringify(values);
+    if (json === themeCacheJson) return;
+    themeCacheJson = json;
+    try { localStorage.setItem(THEME_CACHE_KEY, json); } catch (_) {}
+  }
+
+  /** Hand the surfaces over to the platform's own tokens.
+   *
+   * panel.html started from the cached values last time so the first frame
+   * was not a guess. They are inline custom properties, which outrank the
+   * `:root` rules the platform injects — so as soon as the real tokens are
+   * readable the overrides have to go, or a later skin change would never
+   * reach this page. Removing them is a no-op visually when the cache is
+   * current, which it is on every open after the first. Idempotent, so the
+   * steady look-out below can simply call it. */
+  function adoptPlatformTheme() {
+    var root = document.documentElement;
+    for (var i = 0; i < THEME_ALIASES.length; i++) root.style.removeProperty('--' + THEME_ALIASES[i]);
+    recordThemeAliases();
+  }
+
+  function stopBootThemeWatch() {
+    if (!bootThemeWatch) return;
+    clearInterval(bootThemeWatch);
+    bootThemeWatch = null;
+  }
+
+  function revealBoot() {
+    if (bootDone || !bootThemeReady || !bootStateReady) return;
+    bootDone = true;
+    stopBootThemeWatch();
+    document.documentElement.classList.remove('md-boot');
+    // Revealing from `visibility:hidden` does not resize anything, but the
+    // editor may have measured a not-yet-laid-out viewport if it was created
+    // inside the gate — one layout pass settles it either way.
+    try { if (cm && cm.layout) requestAnimationFrame(function () { cm.layout(); }); } catch (_) {}
+  }
+
+  /** The host has told us whether a document is coming (or one has landed). */
+  function bootNoticeState() {
+    bootStateReady = true;
+    revealBoot();
+  }
+
+  if (api) {
+    if (platformTokensPresent()) {
+      // Already injected before this script ran (a fast host): hand over
+      // right away, i.e. still before the first paint — in that case not even
+      // a stale cache can be seen.
+      adoptPlatformTheme();
+      bootThemeReady = true;
+    } else {
+      // The platform injects by adding a stylesheet, which may or may not be
+      // observable as a DOM mutation — poll instead of guessing.
+      var bootThemeStarted = Date.now();
+      bootThemeWatch = setInterval(function () {
+        if (platformTokensPresent()) {
+          stopBootThemeWatch();
+          adoptPlatformTheme();
+          bootThemeReady = true;
+          revealBoot();
+          return;
+        }
+        if (Date.now() - bootThemeStarted < BOOT_THEME_TIMEOUT) return;
+        // Do not gate the page on the theme any longer than that — but keep a
+        // cheap look-out so the overrides are still handed over whenever the
+        // tokens do arrive, and so a skin change made while this panel is open
+        // refreshes the cache for the next one.
+        stopBootThemeWatch();
+        bootThemeReady = true;
+        revealBoot();
+      }, 16);
+    }
+    // Keep the pre-paint cache honest without polling for it: a skin change
+    // while this panel is open is re-injected by the platform, so recording
+    // the resolved values when the panel goes away (or on a light/dark flip,
+    // which needs no DOM write to observe) is enough to make the next open
+    // start from the current skin. The slow interval is only a backstop for a
+    // panel that is never hidden and never sees a mode change.
+    function refreshThemeCache() { if (platformTokensPresent()) adoptPlatformTheme(); }
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') refreshThemeCache();
+    });
+    window.addEventListener('pagehide', refreshThemeCache);
+    try {
+      var darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener('change', refreshThemeCache);
+    } catch (_) {}
+    setInterval(refreshThemeCache, 5000);
+    setTimeout(bootNoticeState, BOOT_STATE_TIMEOUT);
+  } else {
+    // Outside the host there is nothing to wait for.
+    bootDone = true;
+    document.documentElement.classList.remove('md-boot');
+  }
+
   // ---- i18n ----------------------------------------------------------
   // This page is a standalone static document (loaded into a host webview,
   // not a bundled app with its own build-time locale), so translation
@@ -68,12 +237,15 @@
       'appview.libraryReorderDone': '已完成',
       'appview.rewrite': '改写',
       'appview.focus': '专注',
+      'appview.focusExit': '退出专注模式',
       'appview.openSession': '打开改写会话',
       'appview.rewriting': '已发起改写，会话正在处理并将直接写回文件。',
       'appview.continuing': '已发起续写，会话正在处理并将直接写回文件。',
       'appview.hintSpace': '按 space（空格）以启用 AI · 按 / 选择格式',
       'appview.hintSpaceCode': '按 space（空格）以启用 AI',
       'appview.rewriteDone': '改写已完成，文件内容已刷新。',
+      'appview.cancelling': '正在中断改写…',
+      'appview.cancelled': '改写已中断。',
       'editor.ariaLabel': '写字编辑器',
       'actions.copyToWx': '复制到公众号',
       'actions.copyImg': '复制图片',
@@ -90,6 +262,15 @@
       'confirm.message': '「{file}」还有未保存的改动，要保存后再返回首页吗？',
       'common.markdownDocDefault': 'Markdown 文档',
       'common.customStyleDefault': '自定义风格',
+      'wordCount.home.label': '字数',
+      'wordCount.home.tooltip.character': '按字符统计',
+      'wordCount.home.tooltip.word': '按词组统计',
+      'wordCount.label.character': '{total}',
+      'wordCount.label.word': '{total}',
+      'wordCount.tooltip.character': '按字符统计 {total}\n非英文 {nonEnglish} · 英文 {english}',
+      'wordCount.tooltip.word': '按词组统计 {total}\n非英文 {nonEnglish} · 英文 {english}',
+      'wordCount.mode.character': '按字符',
+      'wordCount.mode.word': '按词组',
       'toolbar.home.tooltip': '返回首页',
       'toolbar.open.tooltipDefault': '打开 Markdown 文件',
       'toolbar.save.label': '保存',
@@ -122,6 +303,7 @@
       'toolbar.focus.tooltipOff': '开启专注：非当前行半透明',
       'toolbar.more.reload': '重新渲染',
       'toolbar.more.reveal': '在文件管理器中定位',
+      'toolbar.more.recentSession': '查看最近的会话',
       'toolbar.more.about': '关于渲染',
       'toolbar.more.tooltip': '更多',
       'annotate.lineUnknown': '（未能精确定位对应行号，请以下方引用文本为准）',
@@ -233,12 +415,15 @@
       'appview.libraryReorderDone': 'Done',
       'appview.rewrite': 'Rewrite',
       'appview.focus': 'Focus',
+      'appview.focusExit': 'Exit focus mode',
       'appview.openSession': 'Open rewrite session',
       'appview.rewriting': 'Rewrite started. The session will apply its revision directly to the file.',
       'appview.continuing': 'Continuation started. The session will write the new text directly to the file.',
       'appview.hintSpace': 'Press space for AI · / for formatting',
       'appview.hintSpaceCode': 'Press space for AI',
       'appview.rewriteDone': 'Rewrite complete. The document has refreshed.',
+      'appview.cancelling': 'Stopping rewrite…',
+      'appview.cancelled': 'Rewrite stopped.',
       'editor.ariaLabel': 'Writing editor',
       'actions.copyToWx': 'Copy for WeChat',
       'actions.copyImg': 'Copy image',
@@ -255,6 +440,15 @@
       'confirm.message': '\u201c{file}\u201d has unsaved changes. Save before returning to Home?',
       'common.markdownDocDefault': 'Markdown document',
       'common.customStyleDefault': 'Custom style',
+      'wordCount.home.label': 'Word count',
+      'wordCount.home.tooltip.character': 'Character count',
+      'wordCount.home.tooltip.word': 'Word count',
+      'wordCount.label.character': '{total}',
+      'wordCount.label.word': '{total}',
+      'wordCount.tooltip.character': 'Character count {total}\nNon-English {nonEnglish} · English {english}',
+      'wordCount.tooltip.word': 'Word count {total}\nNon-English {nonEnglish} · English {english}',
+      'wordCount.mode.character': 'Character',
+      'wordCount.mode.word': 'Word',
       'toolbar.home.tooltip': 'Back to Home',
       'toolbar.open.tooltipDefault': 'Open Markdown file',
       'toolbar.save.label': 'Save',
@@ -287,6 +481,7 @@
       'toolbar.focus.tooltipOff': 'Turn on focus mode: dim inactive lines',
       'toolbar.more.reload': 'Re-render',
       'toolbar.more.reveal': 'Show in file manager',
+      'toolbar.more.recentSession': 'View recent session',
       'toolbar.more.about': 'About rendering',
       'toolbar.more.tooltip': 'More',
       'annotate.lineUnknown': "(Couldn't pinpoint the exact line — use the quoted text below as reference)",
@@ -454,6 +649,11 @@
   var appPreview = document.getElementById('appPreview');
   var appStyle = document.getElementById('appStyle');
   var appStyleMenu = document.getElementById('appStyleMenu');
+  var appWordCountWrap = document.getElementById('appWordCountWrap');
+  var appWordCount = document.getElementById('appWordCount');
+  var appWordCountValue = document.getElementById('appWordCountValue');
+  var appWordCountIcon = document.getElementById('appWordCountIcon');
+  var appWordCountMenu = document.getElementById('appWordCountMenu');
   var appFocus = document.getElementById('appFocus');
   var appFont = document.getElementById('appFont');
   var appFontMenu = document.getElementById('appFontMenu');
@@ -491,7 +691,19 @@
 
   var isAppView = false;
   var appViewInitialized = false;
+  var appViewBreadcrumbSubscribed = false;
+  // Exact receipt identity for the spinner currently displayed in the gutter.
+  // Retaining both ids prevents a late click from cancelling a newer queued turn.
+  var activeRewrite = null;
+  // Current document's most recent AI Session (rewrite or style-design),
+  // if any — powers App View's persistent "查看最近的会话" menu entry.
+  // Reset to null whenever the document changes; repopulated by the host's
+  // 'lastSessionInfo' push right after the new document lands.
+  var lastSessionId = null;
   var previewVisible = true;
+  // Preview visibility the user had just before focus mode closed the pane
+  // (App View only). null = not currently in focus mode. See toggleFocusMode.
+  var previewBeforeFocus = null;
   // Whether an App View AI-style design Session is currently running for
   // this document — drives the wand icon's loading spinner. Restored from
   // the host on panelReady if the panel was destroyed/rebound mid-flight.
@@ -519,6 +731,9 @@
   // Comfortable mode: roomier line spacing while composing. Default off
   // (compact mode keeps the tighter 2px/1.7rem layout).
   var comfortWriting = false;
+  // Character is the default: English letters each count individually.
+  // Word keeps the previous behavior, grouping each English word as one.
+  var wordCountMode = 'character';
   // Focus mode ("专注"): dims every line except the cursor's own line.
   var focusMode = false;
   try {
@@ -530,6 +745,7 @@
     if (EDITOR_FONTS[savedEditorFont]) editorFont = savedEditorFont;
     else if (savedEditorFont) localStorage.removeItem('md-editor-font-family');
     comfortWriting = localStorage.getItem('md-editor-comfort-writing') === '1';
+    if (localStorage.getItem('md-editor-word-count-mode') === 'word') wordCountMode = 'word';
     focusMode = localStorage.getItem('md-editor-focus-mode') === '1';
     var savedLibraryGroups = JSON.parse(localStorage.getItem(LIBRARY_GROUP_STATE_KEY) || '{}');
     if (Array.isArray(savedLibraryGroups.order)) libraryGroupOrder = savedLibraryGroups.order.filter(function (id) { return typeof id === 'string'; });
@@ -581,6 +797,35 @@
       statusEl.textContent = '';
       statusEl.className = 'status';
     }, 5000);
+  }
+
+  // Rewrite/style-design sessions now run with `activity: 'background'`
+  // (quiet: no Space conversation-list entry, no desktop notification), so
+  // this inline "打开改写会话" button is the *only* way back to that
+  // conversation short of digging through the Space by hand. `autoHideMs`
+  // falsy means "leave it up" — used for the started/in-progress state,
+  // since the task keeps running long after 5s and the button should still
+  // be there when the writer glances back down; finished/failed states pass
+  // the normal 5s so the footer doesn't linger forever once it's over.
+  function setStatusWithSession(text, isError, sessionId, autoHideMs) {
+    if (statusHideTimer) { clearTimeout(statusHideTimer); statusHideTimer = 0; }
+    statusEl.replaceChildren(document.createTextNode(text || ''));
+    statusEl.className = 'status' + (isError ? ' error' : '');
+    if (sessionId) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'status-inline-btn';
+      btn.textContent = t('appview.openSession');
+      btn.addEventListener('click', function () {
+        if (api && api.navigation && api.navigation.openSession) api.navigation.openSession(sessionId);
+      });
+      statusEl.appendChild(btn);
+    }
+    if (autoHideMs) statusHideTimer = setTimeout(function () {
+      statusHideTimer = 0;
+      statusEl.replaceChildren();
+      statusEl.className = 'status';
+    }, autoHideMs);
   }
 
   function showRendererAbout() {
@@ -807,7 +1052,14 @@
   }
 
   function saveLibraryGroupState() {
-    try { localStorage.setItem(LIBRARY_GROUP_STATE_KEY, JSON.stringify({ order: libraryGroupOrder, collapsed: libraryCollapsedGroups })); } catch (e) {}
+    var payload = { order: libraryGroupOrder, collapsed: libraryCollapsedGroups };
+    // Keep the localStorage copy for the very first synchronous paint before
+    // 'ready' arrives, but the extension host now owns the durable copy —
+    // localStorage alone doesn't reliably survive a panel/WebView
+    // replacement (e.g. an app restart), which is why a reorder could
+    // silently revert to the previous order after relaunching.
+    try { localStorage.setItem(LIBRARY_GROUP_STATE_KEY, JSON.stringify(payload)); } catch (e) {}
+    if (api && api.postMessage) api.postMessage({ type: 'saveLibraryGroups', libraryGroups: payload });
   }
 
   // Shared by both the Library drawer and the Home "recent documents" grid
@@ -1019,7 +1271,7 @@
     setLibraryOpen(false);
     loadingFromHome = true;
     setStatus(t('status.opening'));
-    api.postMessage({ type: 'loadPath', path: docPath });
+    requestLoadPath(docPath);
   });
   if (libraryGroups) {
     // Persist ordinary expand/collapse choices. During a drag all groups are
@@ -1079,6 +1331,21 @@
   // otherwise prints nothing at all for the very first document a panel loads).
   var loadingFromHome = false;
 
+  // The most recently *requested* switch-to-another-document path. `loadPath`
+  // has no request/response correlation id, so nothing stops two overlapping
+  // requests (e.g. two quick ⌘[ presses) from resolving out of order. Every
+  // switch-document request updates this; a `document` reply for a different
+  // path than this is a stale winner of that race and must be dropped, or the
+  // editor can end up showing file A's content while the breadcrumb (already
+  // updated synchronously by the host) says B.
+  var awaitingLoadPath = '';
+
+  function requestLoadPath(filePath) {
+    if (!filePath || !api || !api.postMessage) return;
+    awaitingLoadPath = filePath;
+    api.postMessage({ type: 'loadPath', path: filePath });
+  }
+
   if (homeGrid) homeGrid.addEventListener('click', function (event) {
     if (!api || !api.postMessage) return;
     // Delegated: `.home-group-cwd` buttons are re-created on every render
@@ -1104,7 +1371,7 @@
     if (!docPath) return;
     loadingFromHome = true;
     setStatus(t('status.opening'));
-    api.postMessage({ type: 'loadPath', path: docPath });
+    requestLoadPath(docPath);
   });
   // The reveal control is keyboard-focusable (role="button" tabindex="0")
   // since it's nested inside the card's own <button>; Enter/Space need their
@@ -1135,8 +1402,95 @@
   }
 
   function setPanelTitle(title) {
-    if (!api || !api.panel || !api.panel.setTitle) return;
+    // App View owns its leading “Writing” breadcrumb through the manifest.
+    // Updating the panel title here would overwrite that fixed app identity
+    // with the current filename, so only the ordinary AppPanel updates it.
+    if (isAppView || !api || !api.panel || !api.panel.setTitle) return;
     api.panel.setTitle(title || t('home.title')).catch(function () {});
+  }
+
+  // Breadcrumb labels alone cannot reconstruct a document after ⌘[/⌘] or a
+  // relaunch. Keep the absolute path in the opaque level id; the host only
+  // displays `title`, and the backend still validates every loadPath request.
+  function documentBreadcrumbId(filePath) {
+    return filePath ? 'document:' + encodeURIComponent(filePath) : '';
+  }
+
+  function documentPathFromBreadcrumbId(id) {
+    if (!id || id.indexOf('document:') !== 0) return '';
+    try {
+      var filePath = decodeURIComponent(id.slice('document:'.length));
+      return /^(?:\/|[A-Za-z]:[\\/])/.test(filePath) ? filePath : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // Set while `loadBreadcrumbDocument` has a request in flight so the
+  // `document` reply that eventually lands knows this load exists purely to
+  // catch the editor's own content up with a breadcrumb the host already
+  // set (a click on an earlier crumb, or a ⌘[/⌘] restore) — not a fresh
+  // user-initiated open. `applyDocument` must not call `syncAppViewBreadcrumb()`
+  // for it: the label is already correct, and re-`set()`-ing it would replay
+  // straight back into the host's history recording as if it were a brand
+  // new navigation, which can push a spurious duplicate entry and quietly
+  // scramble the back/forward stack.
+  var breadcrumbCatchUpPath = '';
+
+  function loadBreadcrumbDocument(filePath) {
+    if (!filePath || filePath === sourcePath || !api || !api.postMessage) return;
+    breadcrumbCatchUpPath = filePath;
+    requestLoadPath(filePath);
+  }
+
+  function syncAppViewBreadcrumb() {
+    if (!isAppView || !api || !api.appView || !api.appView.breadcrumb) return;
+    // “Writing” is the platform-owned home level. The page adds exactly one
+    // child level only while a document is open; clearing it returns to home.
+    var levels = hasDocument() && sourcePath
+      ? [{ id: documentBreadcrumbId(sourcePath), title: fileName || t('common.markdownDocDefault'), icon: 'file-text' }]
+      : [];
+    api.appView.breadcrumb.set(levels).catch(function () {});
+  }
+
+  function subscribeAppViewBreadcrumb() {
+    if (appViewBreadcrumbSubscribed || !api || !api.appView || !api.appView.breadcrumb) return;
+    appViewBreadcrumbSubscribed = true;
+    api.appView.breadcrumb.onNavigate(function (payload) {
+      // Finch reports its fixed “Mini Tools” / “Writing” root as an empty id.
+      // Route it through the same guarded Home flow as the in-page toolbar,
+      // including the unsaved-document confirmation before leaving the editor.
+      if (!payload.id) {
+        // goHome() may be cancelled by the unsaved-changes confirm, in which
+        // case resetToHome() never runs and the still-open document's own
+        // breadcrumb must be re-published to correct the host's optimistic
+        // truncation; when it does go through, resetToHome() already synced
+        // `[]` and this re-set is a harmless idempotent no-op (same empty
+        // levels), not a genuine new navigation.
+        if (hasDocument()) goHome().then(syncAppViewBreadcrumb);
+        return;
+      }
+      var filePath = documentPathFromBreadcrumbId(payload.id);
+      if (filePath) loadBreadcrumbDocument(filePath);
+      else api.appView.breadcrumb.set([]).catch(function () {});
+    });
+    api.appView.breadcrumb.onRestore(function (payload) {
+      var levels = Array.isArray(payload.levels) ? payload.levels : [];
+      if (!levels.length) {
+        // Same reasoning as onNavigate above.
+        if (hasDocument()) goHome().then(syncAppViewBreadcrumb);
+        return;
+      }
+      // This editor owns only one child page. Unknown/deeper restored stacks
+      // cannot be routed safely, so clear them instead of showing stale labels.
+      var filePath = levels.length === 1 && documentPathFromBreadcrumbId(levels[0].id);
+      if (!filePath) {
+        api.appView.breadcrumb.set([]).catch(function () {});
+        if (hasDocument()) goHome().then(syncAppViewBreadcrumb);
+        return;
+      }
+      loadBreadcrumbDocument(filePath);
+    });
   }
 
   // 8 built-in presets, then a separator, then the 3 reusable AI-managed
@@ -1191,7 +1545,8 @@
       saveTooltip = t('toolbar.save.tooltipSaved');
     }
     var hasDoc = hasDocument();
-    return [
+    var wordCountPresentation = getWordCountPresentation(markdown, hasDoc);
+    var toolbar = [
       {
         // Always available — a one-click way back to the recent-documents
         // launch page, regardless of what's currently open.
@@ -1220,6 +1575,16 @@
         items: buildStyleMenuItems(),
       },
       { type: 'spacer' },
+      {
+        // Character uses the built-in Lucide Hash; Word uses this mini tool's
+        // whole-word icon, so the active counting method is visible at a glance.
+        type: 'menu', id: 'wordCount', icon: wordCountPresentation.icon,
+        label: wordCountPresentation.label, tooltip: wordCountPresentation.tooltip, disabled: !hasDoc,
+        items: [
+          { id: 'word-count:character', label: t('wordCount.mode.character'), icon: 'hash', checked: wordCountMode === 'character' },
+          { id: 'word-count:word', label: t('wordCount.mode.word'), icon: 'ext:markdown-editor-icons/whole-word', checked: wordCountMode === 'word' },
+        ],
+      },
       // NOTE: copy/export/AI-layout deliberately do NOT live here. A host
       // toolbar click reaches this page as a postMessage, which carries no
       // user activation, so clipboard writes and composer.addContexts() were
@@ -1256,15 +1621,20 @@
         items: [
           { id: 'reload', label: t('toolbar.more.reload'), disabled: mode !== 'preview' },
           { id: 'reveal', label: t('toolbar.more.reveal'), disabled: !hasDoc },
+          { id: 'recentSession', label: t('toolbar.more.recentSession'), disabled: !lastSessionId },
           { id: 'more-sep', label: '', separator: true },
           { id: 'about', label: t('toolbar.more.about') },
         ],
       },
     ];
+    // AppPanel's toolbar is live: omit the count menu entirely when the
+    // panel is showing Home instead of a document.
+    if (!hasDoc) return toolbar.filter(function (item) { return !('id' in item) || item.id !== 'wordCount'; });
+    return toolbar;
   }
 
-  function appMenuButton(id, label, checked) {
-    return '<button type="button" data-app-action="' + id + '"' + (checked ? ' class="checked"' : '') + '><span>' + label + '</span>' + (checked ? '<span>✓</span>' : '') + '</button>';
+  function appMenuButton(id, label, checked, disabled) {
+    return '<button type="button" data-app-action="' + id + '"' + (checked ? ' class="checked"' : '') + (disabled ? ' disabled' : '') + '><span>' + label + '</span>' + (checked ? '<span>✓</span>' : '') + '</button>';
   }
 
   function renderAppMenus() {
@@ -1287,6 +1657,8 @@
       }
       appStyleMenu.innerHTML = markup;
     }
+    if (appWordCountMenu) appWordCountMenu.innerHTML = appMenuButton('word-count:character', t('wordCount.mode.character'), wordCountMode === 'character')
+      + appMenuButton('word-count:word', t('wordCount.mode.word'), wordCountMode === 'word');
     if (appFontMenu) appFontMenu.innerHTML = appMenuButton('comfort:read', t('toolbar.comfort.read'), !comfortWriting)
       + appMenuButton('comfort:write', t('toolbar.comfort.write'), comfortWriting) + '<hr>'
       + appMenuButton('font-size:14', t('toolbar.fontSize.small'), editorFontSize === 14)
@@ -1295,12 +1667,79 @@
       + appMenuButton('font-family:rounded', t('toolbar.fontFamily.default'), editorFont === 'rounded')
       + appMenuButton('font-family:songti', t('toolbar.fontFamily.serif'), editorFont === 'songti');
     if (appMoreMenu) appMoreMenu.innerHTML = appMenuButton('reload', t('toolbar.more.reload'), false)
-      + appMenuButton('reveal', t('toolbar.more.reveal'), false) + '<hr>' + appMenuButton('about', t('toolbar.more.about'), false);
+      + appMenuButton('reveal', t('toolbar.more.reveal'), false)
+      + appMenuButton('recentSession', t('toolbar.more.recentSession'), false, !lastSessionId)
+      + '<hr>' + appMenuButton('about', t('toolbar.more.about'), false);
+  }
+
+  // Count rendered article language, not Markdown scaffolding: frontmatter,
+  // fenced/inline code, link destinations, and formatting punctuation don't
+  // inflate the writing total. Character mode counts English letters one by
+  // one; Word mode groups each English word while keeping other letters and
+  // numbers (including Chinese characters) as individual units.
+  function countArticleWords(source) {
+    var text = String(source || '').replace(/\r\n?/g, '\n')
+      .replace(/^(?:\uFEFF)?---\s*\n[\s\S]*?\n(?:---|\.\.\.)\s*(?=\n|$)/, '\n')
+      .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, ' ')
+      .replace(/`[^`\n]*`/g, ' ')
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/https?:\/\/\S+/g, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-+*]\s+|\d+[.)]\s+)/gm, '')
+      .replace(/[*_~]/g, ' ');
+    var englishWordRe = /[A-Za-z]+(?:['’][A-Za-z]+)*(?:-[A-Za-z]+(?:['’][A-Za-z]+)*)*/g;
+    var englishWords = (text.match(englishWordRe) || []).length;
+    var englishCharacters = Array.from(text).filter(function (char) { return /[A-Za-z]/.test(char); }).length;
+    var nonEnglish = Array.from(text.replace(englishWordRe, ' ')).filter(function (char) {
+      return /[\p{L}\p{N}]/u.test(char);
+    }).length;
+    return { englishWords: englishWords, englishCharacters: englishCharacters, nonEnglish: nonEnglish };
+  }
+
+  function getWordCountPresentation(source, hasDoc) {
+    var isCharacter = wordCountMode === 'character';
+    var icon = isCharacter ? 'hash' : 'ext:markdown-editor-icons/whole-word';
+    if (!hasDoc) return {
+      icon: icon,
+      label: t('wordCount.home.label'),
+      tooltip: t(isCharacter ? 'wordCount.home.tooltip.character' : 'wordCount.home.tooltip.word'),
+    };
+    var count = countArticleWords(source);
+    var english = isCharacter ? count.englishCharacters : count.englishWords;
+    var values = { total: count.nonEnglish + english, nonEnglish: count.nonEnglish, english: english };
+    return {
+      icon: icon,
+      label: t(isCharacter ? 'wordCount.label.character' : 'wordCount.label.word', values),
+      tooltip: t(isCharacter ? 'wordCount.tooltip.character' : 'wordCount.tooltip.word', values),
+    };
+  }
+
+  function wordCountIconMarkup() {
+    return wordCountMode === 'character'
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>'
+      : '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-whole-word" aria-hidden="true"><circle cx="7" cy="12" r="3"/><path d="M10 9v6"/><circle cx="17" cy="12" r="3"/><path d="M14 7v8"/><path d="M22 17v1c0 .5-.5 1-1 1H3c-.5 0-1-.5-1-1v-1"/></svg>';
+  }
+
+  function updateWordCount() {
+    if (!appWordCount) return;
+    var presentation = getWordCountPresentation(markdown, hasDocument());
+    if (appWordCountValue) appWordCountValue.textContent = presentation.label;
+    // Rebuild the one icon node instead of relying on a pair of `hidden`
+    // attributes. This guarantees AppView updates after a menu selection.
+    if (appWordCountIcon && appWordCountIcon.getAttribute('data-mode') !== wordCountMode) {
+      appWordCountIcon.innerHTML = wordCountIconMarkup();
+      appWordCountIcon.setAttribute('data-mode', wordCountMode);
+    }
+    appWordCount.setAttribute('data-tooltip', presentation.tooltip);
+    appWordCount.setAttribute('aria-label', presentation.tooltip);
   }
 
   function syncAppToolbar() {
     if (!isAppView) return;
     var hasDoc = hasDocument();
+    if (appWordCountWrap) appWordCountWrap.hidden = !hasDoc;
+    updateWordCount();
     if (appSave) {
       appSave.disabled = !dirty;
       appSave.classList.toggle('dirty', dirty);
@@ -1311,7 +1750,16 @@
       if (icSave) icSave.hidden = savedFlash;
       if (icCheck) icCheck.hidden = !savedFlash;
     }
-    if (appFocus) { appFocus.disabled = !hasDoc; appFocus.classList.toggle('checked', focusMode); }
+    if (appFocus) {
+      appFocus.disabled = !hasDoc;
+      appFocus.classList.toggle('checked', focusMode);
+      // Once collapsed to a lone floating pill (see .focus-mode in panel.css),
+      // this is the only surviving control — its tooltip should say what
+      // clicking it now does (leave focus mode), not just name the feature.
+      var focusTooltip = t(focusMode ? 'appview.focusExit' : 'appview.focus');
+      appFocus.setAttribute('data-tooltip', focusTooltip);
+      appFocus.setAttribute('aria-label', focusTooltip);
+    }
     if (appPreview) { appPreview.disabled = !hasDoc; appPreview.classList.toggle('checked', previewVisible); }
     if (appOpen) appOpen.disabled = nativePickPending;
     if (appStyle) {
@@ -1397,12 +1845,30 @@
     },
     onPasteImage: pasteImageToHost,
     onAiHintTrigger: openAiPromptBar,
+    onAiWorkingCancel: function () {
+      if (!isAppView || !activeRewrite || !sourcePath || !api || !api.postMessage) return;
+      api.postMessage({ type: 'cancelRewrite', path: sourcePath, sessionId: activeRewrite.sessionId, turnId: activeRewrite.turnId });
+    },
   });
   cm.setFontSize(editorFontSize);
   cm.setFontFamily(EDITOR_FONTS[editorFont]);
   cm.setComfortWriting(comfortWriting);
   cm.setFocusMode(focusMode);
-  cm.scrollDOM.addEventListener('scroll', closePopup);
+  // Mirrors the toggle in toggleFocusMode() — applies a focus mode restored
+  // from localStorage before the first click, so a session that starts in
+  // focus mode also starts with the App View toolbar already collapsed.
+  document.body.classList.toggle('focus-mode', focusMode);
+  var scrollbarHideTimer = 0;
+  cm.scrollDOM.addEventListener('scroll', function () {
+    closePopup();
+    // Non-macOS scrollbars otherwise remain permanently visible. Reveal the
+    // thumb during input, then let it fade away after scrolling settles.
+    cm.scrollDOM.classList.add('cm-scrollbar-active');
+    window.clearTimeout(scrollbarHideTimer);
+    scrollbarHideTimer = window.setTimeout(function () {
+      cm.scrollDOM.classList.remove('cm-scrollbar-active');
+    }, 800);
+  });
 
   // ---- Markdown <-> bm.md rendering ----
 
@@ -1673,6 +2139,82 @@
     try { return getComputedStyle(frame).backgroundColor || ''; } catch (e) { return ''; }
   }
 
+  // bmmd renders Mermaid diagrams and Infographic charts as raw inline
+  // <svg>. WeChat's official-account editor strips <svg> entirely on
+  // paste (it isn't in its allowed-tag list), so anything left as a live
+  // SVG silently vanishes from a pasted article. Rasterizing each one into
+  // a plain <img> right in the preview — the same tag every other image in
+  // the article already is — means the existing copy/export paths need no
+  // special-casing at all; what's on screen is already pasteable.
+  function svgToPngDataUrl(svg, widthPx, heightPx) {
+    // 2x is the same fixed factor `renderArticleCanvas()` uses for the
+    // whole-article export below; bump it a bit further for small/dense
+    // diagrams so their labels stay legible at typical WeChat width.
+    var scale = Math.min(3, Math.max(2, (window.devicePixelRatio || 1) * 2));
+    var serialized;
+    try { serialized = new XMLSerializer().serializeToString(svg); } catch (e) { return Promise.reject(e); }
+    var svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(serialized);
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.decoding = 'sync';
+      img.onload = function () {
+        try {
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(widthPx * scale));
+          canvas.height = Math.max(1, Math.round(heightPx * scale));
+          var ctx2d = canvas.getContext('2d');
+          ctx2d.scale(scale, scale);
+          // The SVG's own inline `style="background:…"` (set per Mermaid
+          // theme, see renderer.ts) does not necessarily reach rasterized
+          // pixels the way it paints as a live in-page CSS background, so
+          // fill the canvas with the same color read straight off the
+          // element first — belt and suspenders, matches how
+          // renderArticleCanvas() below handles the whole-article case.
+          var bg = '';
+          try { bg = getComputedStyle(svg).backgroundColor; } catch (e2) { bg = ''; }
+          if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+            ctx2d.fillStyle = bg;
+            ctx2d.fillRect(0, 0, widthPx, heightPx);
+          }
+          ctx2d.drawImage(img, 0, 0, widthPx, heightPx);
+          resolve(canvas.toDataURL('image/png'));
+        } catch (e) { reject(e); }
+      };
+      img.onerror = function () { reject(new Error('svg rasterize failed')); };
+      img.src = svgUrl;
+    });
+  }
+
+  function convertSvgFiguresToImages() {
+    if (!frameReady || !frame.contentDocument || !frame.contentDocument.body) return;
+    var doc = frame.contentDocument;
+    var svgs = Array.prototype.slice.call(doc.querySelectorAll('figure.figure-mermaid > svg, figure.figure-infographic > svg'));
+    if (!svgs.length) return;
+    Promise.all(svgs.map(function (svg) {
+      var figure = svg.closest('figure');
+      var rect = svg.getBoundingClientRect();
+      var width = Math.ceil(rect.width) || (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 600;
+      var height = Math.ceil(rect.height) || (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height) || 400;
+      return svgToPngDataUrl(svg, width, height).then(function (dataUrl) {
+        var img = doc.createElement('img');
+        img.src = dataUrl;
+        img.alt = figure && figure.classList.contains('figure-infographic') ? 'Infographic' : 'Mermaid diagram';
+        img.style.display = 'block';
+        img.style.width = '100%';
+        img.style.height = 'auto';
+        svg.replaceWith(img);
+      }).catch(function () {
+        // Leave the original <svg> in place on failure — a working (if
+        // not WeChat-pasteable) preview beats a blank figure.
+      });
+    })).then(function () {
+      // Keep the cached `html` string in sync with the now-rasterized DOM
+      // so copyHtml()/export read the <img> version, not the stale <svg>
+      // — this is the whole point: no separate copy-time special-casing.
+      if (doc.body) html = doc.body.innerHTML;
+    });
+  }
+
   function showHtml(next) {
     var previous = captureScroll();
     var d = frame.contentDocument;
@@ -1684,13 +2226,15 @@
       restoreScroll(previous);
       bindPreviewSelection();
       buildScrollAnchors();
+      convertSvgFiguresToImages();
       return;
     }
-    // Only reset the iframe's own html/body box model here. bm.md already
-    // inlines its own spacing (e.g. "padding: 2em 1.75em") and background
-    // directly onto the #bm-md section — do NOT override those, or the
-    // article loses its official top padding/background and looks flush
-    // against the frame edge.
+    // Only reset the iframe's own html/body box model here — never add padding.
+    // bm.md inlines the article's spacing directly onto the #bm-md section
+    // (e.g. "padding: 28px 24px"), and that padding is what gives the preview
+    // its inset. Adding padding on this frame instead would double it up.
+    // (A custom theme that defines its own #bm-md padding has the base inline
+    // padding stripped at render time — see stripRootArticlePadding.)
     frame.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_blank">' +
       '<style>html,body{margin:0!important;padding:0!important;min-height:100%}' +
       'body{background:' + (bg || 'transparent') + '}' +
@@ -1871,6 +2415,7 @@
       frameReady = true;
       buildScrollAnchors();
       bindScrollSync();
+      convertSvgFiguresToImages();
     });
   });
 
@@ -1988,6 +2533,9 @@
   // (address-bar search, etc.) on those platforms.
   var uaPlatform = (navigator.platform || navigator.userAgent || '');
   var isMacPlatform = /Mac|iPhone|iPod|iPad/.test(uaPlatform);
+  // Non-macOS desktop scrollbars reserve a visible track by default. Keep
+  // scrolling intact while letting the editor use the full writing width.
+  document.body.classList.toggle('non-mac-platform', !isMacPlatform);
 
   function isRewriteFocusShortcut(e) {
     if (String(e.key).toLowerCase() !== 'e') return false;
@@ -2362,7 +2910,7 @@
   // status line can say *what* moved instead of just "content updated".
   var lastExternalChange = null;
 
-  function applyDocument(nextMarkdown, nextName, nextPath, force, diskBaseline) {
+  function applyDocument(nextMarkdown, nextName, nextPath, force, diskBaseline, skipBreadcrumbSync) {
     // Deliberately does NOT check cm.hasFocus(): unsaved local edits must
     // never be silently clobbered by an external update, whether or not the
     // editor happens to have DOM focus at that instant (e.g. the panel was
@@ -2403,6 +2951,7 @@
     if (!lastExternalChange) cm.setValue(markdown);
     setDirty(false); // also rebuilds+syncs the whole toolbar, picking up the new sourcePath/fileName below
     setPanelTitle(fileName);
+    if (!skipBreadcrumbSync) syncAppViewBreadcrumb();
     updateEmptyState();
     showPane();
     if (isAppView || mode === 'preview') render();
@@ -3156,6 +3705,25 @@
     setStatus(comfortWriting ? t('status.comfortWrite') : t('status.comfortRead'));
   }
 
+  function setWordCountMode(next) {
+    if ((next !== 'character' && next !== 'word') || wordCountMode === next) return;
+    wordCountMode = next;
+    try { localStorage.setItem('md-editor-word-count-mode', wordCountMode); } catch (e) {}
+    syncToolbar();
+  }
+
+  // Single place that flips the App View preview pane, so focus mode and the
+  // toolbar's Preview button can't drift out of sync. `render()` re-lays out
+  // the article into a pane that was display:none a moment ago.
+  function setPreviewVisible(next) {
+    var visible = !!next;
+    if (visible === previewVisible) return;
+    previewVisible = visible;
+    document.body.classList.toggle('preview-hidden', !previewVisible);
+    syncToolbar();
+    if (previewVisible) requestAnimationFrame(function () { cm.layout(); render(); });
+  }
+
   function toggleFocusMode() {
     focusMode = !focusMode;
     // Selection-triggered rewrite has no on/off toggle anymore (it's
@@ -3171,6 +3739,24 @@
       annotationsEnabled = true;
     }
     cm.setFocusMode(focusMode);
+    // App View only: collapse the toolbar to a single floating toggle (see
+    // `.focus-mode` in panel.css). Harmless to set outside App View too —
+    // the sidebar AppPanel toolbar has no rule keyed off this class.
+    document.body.classList.toggle('focus-mode', focusMode);
+    // App View only: focus mode is a distraction-free writing surface, so it
+    // takes the preview pane down with it. Opening it again isn't possible
+    // while collapsed (the Preview button is hidden), so the user's earlier
+    // choice is remembered and restored when focus mode ends.
+    if (isAppView) {
+      if (focusMode) {
+        if (previewBeforeFocus === null) previewBeforeFocus = previewVisible;
+        setPreviewVisible(false);
+      } else if (previewBeforeFocus !== null) {
+        var restorePreview = previewBeforeFocus;
+        previewBeforeFocus = null;
+        setPreviewVisible(restorePreview);
+      }
+    }
     try { localStorage.setItem('md-editor-focus-mode', focusMode ? '1' : '0'); } catch (e) {}
     syncToolbar();
     setStatus(focusMode ? t('status.focusOn') : t('status.focusOff'));
@@ -3234,11 +3820,13 @@
     fileName = '';
     sourcePath = '';
     savedMarkdown = null;
+    lastSessionId = null;
     html = '';
     annotationsEnabled = false;
     mode = 'edit';
     if (cm) cm.setValue('');
     setPanelTitle(t('home.title'));
+    syncAppViewBreadcrumb();
     showHtml('');
     if (api && api.postMessage) api.postMessage({ type: 'goHome' });
     updateEmptyState();
@@ -3288,10 +3876,13 @@
     if (itemId === 'save') { saveNow(); return; }
     if (itemId === 'reload') { render(); return; }
     if (itemId === 'reveal') { if (sourcePath && api && api.postMessage) api.postMessage({ type: 'openPath', path: sourcePath }); return; }
+    if (itemId === 'recentSession') { if (lastSessionId && api && api.navigation && api.navigation.openSession) api.navigation.openSession(lastSessionId); return; }
     if (itemId && itemId.indexOf('font-size:') === 0) { setEditorFontSize(Number(itemId.slice('font-size:'.length))); return; }
     if (itemId && itemId.indexOf('font-family:') === 0) { setEditorFont(itemId.slice('font-family:'.length)); return; }
     if (itemId === 'comfort:read') { setComfortWriting(false); return; }
     if (itemId === 'comfort:write') { setComfortWriting(true); return; }
+    if (itemId === 'word-count:character') { setWordCountMode('character'); return; }
+    if (itemId === 'word-count:word') { setWordCountMode('word'); return; }
     if (itemId === 'focus') { toggleFocusMode(); return; }
     if (itemId === 'about') { showRendererAbout(); return; }
     // These two must be checked before the generic 'style:' fallback below,
@@ -3302,7 +3893,7 @@
   }
 
   function closeAppMenus() {
-    [appStyleMenu, appFontMenu, appMoreMenu].forEach(function (menu) { if (menu) menu.hidden = true; });
+    [appStyleMenu, appWordCountMenu, appFontMenu, appMoreMenu].forEach(function (menu) { if (menu) menu.hidden = true; });
   }
   function toggleAppMenu(menu) {
     if (!menu) return;
@@ -3314,6 +3905,7 @@
     if (trigger) trigger.addEventListener('click', function (event) { event.stopPropagation(); toggleAppMenu(menu); });
     if (menu) menu.addEventListener('click', function (event) {
       var target = event.target && event.target.closest ? event.target.closest('[data-app-action]') : null;
+      if (target && target.disabled) return;
       var action = target && target.getAttribute('data-app-action');
       if (!action) return;
       handleMenu(action);
@@ -3325,12 +3917,10 @@
   if (appSave) appSave.addEventListener('click', saveNow);
   if (appFocus) appFocus.addEventListener('click', toggleFocusMode);
   if (appPreview) appPreview.addEventListener('click', function () {
-    previewVisible = !previewVisible;
-    document.body.classList.toggle('preview-hidden', !previewVisible);
-    syncToolbar();
-    if (previewVisible) requestAnimationFrame(function () { cm.layout(); render(); });
+    setPreviewVisible(!previewVisible);
   });
   bindAppMenu(appStyle, appStyleMenu);
+  bindAppMenu(appWordCount, appWordCountMenu);
   bindAppMenu(appFont, appFontMenu);
   bindAppMenu(appMore, appMoreMenu);
   document.addEventListener('click', closeAppMenus);
@@ -3452,6 +4042,17 @@
           // One-time migration from the earlier WebView-local cache.
           persistWritingPreferences();
         }
+        // Host is the durable source of truth for library group order; if it
+        // has a copy, it wins over whatever localStorage restored at script
+        // startup. Otherwise, migrate this WebView's local copy (if any) up
+        // to the host so it survives the next restart.
+        if (m.libraryGroups && typeof m.libraryGroups === 'object') {
+          libraryGroupOrder = Array.isArray(m.libraryGroups.order) ? m.libraryGroups.order.filter(function (id) { return typeof id === 'string'; }) : [];
+          libraryCollapsedGroups = m.libraryGroups.collapsed && typeof m.libraryGroups.collapsed === 'object' ? m.libraryGroups.collapsed : {};
+          if (libraryDocumentsCache.length) renderLibraryDocuments(libraryDocumentsCache);
+        } else if (libraryGroupOrder.length || Object.keys(libraryCollapsedGroups).length) {
+          saveLibraryGroupState();
+        }
         // Reconcile the navigator.language guess (used for the very first,
         // synchronous paint) against the host's real locale (ctx.i18n.locale,
         // forwarded from index.ts). Only re-render if it actually flips zh/en
@@ -3506,6 +4107,18 @@
       }
       if (m.type === 'finch:env') {
         isAppView = m.view === 'appView';
+        if (isAppView) {
+          // A document push can arrive before finch:env. In that short window
+          // the shared panel code still treats this as AppPanel and writes the
+          // filename into the host's leading App View title; restore the fixed
+          // app identity as soon as the real scope is known.
+          if (api && api.panel && api.panel.setTitle) api.panel.setTitle(t('home.title')).catch(function () {});
+          // Publish the page's current route before subscribing: onRestore
+          // immediately replays the host snapshot, so a document that loaded
+          // just before finch:env must not be mistaken for a restored Home.
+          syncAppViewBreadcrumb();
+          subscribeAppViewBreadcrumb();
+        }
         if (isAppView && !appViewInitialized) {
           // AppView starts as a writing surface; preview is opt-in.
           appViewInitialized = true;
@@ -3529,6 +4142,7 @@
           renderRecentDocuments([]);
         }
         showPane();
+        syncAppViewBreadcrumb();
         syncToolbar();
         if (isAppView && hasDocument()) render();
         if (!empty.hidden || isAppView) requestRecentDocuments();
@@ -3542,16 +4156,39 @@
       }
       if (m.type === 'status') { setStatus(m.message); return; }
       if (m.type === 'rewriteSessionStarted') {
+        activeRewrite = m.sessionId && m.turnId ? { sessionId: m.sessionId, turnId: m.turnId } : null;
         cm.setAiWorkingLines(Number(m.startLine) || 0, Number(m.endLine) || 0);
-        setStatus(m.rewriteMode === 'continue' ? t('appview.continuing') : t('appview.rewriting'));
+        setStatusWithSession(m.rewriteMode === 'continue' ? t('appview.continuing') : t('appview.rewriting'), false, m.sessionId, 0);
         return;
       }
-      if (m.type === 'rewriteSessionFinished') { cm.setAiWorkingLines(0, 0); setStatus(t('appview.rewriteDone')); return; }
-      if (m.type === 'rewriteSessionFailed') { cm.setAiWorkingLines(0, 0); setStatus(m.message || 'Rewrite failed.', true); return; }
-      if (m.type === 'styleSessionStarted') { setStyleSessionLoading(true); setStatus(t('aiStyle.appViewDesigning')); return; }
-      if (m.type === 'styleSessionFinished') { setStyleSessionLoading(false); setStatus(m.message || t('aiStyle.appViewDone')); return; }
-      if (m.type === 'styleSessionFailed') { setStyleSessionLoading(false); setStatus(m.message || t('aiStyle.appViewFailed'), true); return; }
-      if (m.type === 'lastFileUnavailable') { return; }
+      if (m.type === 'rewriteCancellationRequested') {
+        if (activeRewrite && activeRewrite.turnId === m.turnId) activeRewrite.cancelling = true;
+        setStatusWithSession(t('appview.cancelling'), false, m.sessionId, 0);
+        return;
+      }
+      if (m.type === 'rewriteSessionFinished') { activeRewrite = null; cm.setAiWorkingLines(0, 0); setStatusWithSession(t('appview.rewriteDone'), false, m.sessionId, 5000); return; }
+      if (m.type === 'rewriteSessionFailed') {
+        var wasCancelled = activeRewrite && activeRewrite.turnId === m.turnId && activeRewrite.cancelling;
+        activeRewrite = null;
+        cm.setAiWorkingLines(0, 0);
+        setStatusWithSession(wasCancelled ? t('appview.cancelled') : (m.message || 'Rewrite failed.'), !wasCancelled, m.sessionId, 5000);
+        return;
+      }
+      if (m.type === 'styleSessionStarted') { setStyleSessionLoading(true); setStatusWithSession(t('aiStyle.appViewDesigning'), false, m.sessionId, 0); return; }
+      if (m.type === 'styleSessionFinished') { setStyleSessionLoading(false); setStatusWithSession(m.message || t('aiStyle.appViewDone'), false, m.sessionId, 5000); return; }
+      if (m.type === 'styleSessionFailed') { setStyleSessionLoading(false); setStatusWithSession(m.message || t('aiStyle.appViewFailed'), true, m.sessionId, 5000); return; }
+      if (m.type === 'lastFileUnavailable') {
+        // Definitive "nothing to restore" answer — with it the boot gate knows
+        // the empty state is the right first screen, so it can reveal.
+        bootNoticeState();
+        return;
+      }
+      if (m.type === 'lastSessionInfo') {
+        lastSessionId = m.sessionId || null;
+        syncToolbar();
+        renderAppMenus();
+        return;
+      }
       if (m.type === 'finch:menu') { handleMenu(m.itemId); return; }
       if (m.type === 'document') {
         var openedFromPicker = nativePickPending;
@@ -3569,6 +4206,21 @@
         // own save, and not an external edit of the file we're currently
         // looking at, so neither of the two guards below should apply to it.
         var isDifferentDocument = !!incomingPath && !!sourcePath && incomingPath !== sourcePath;
+        // A new file means any previously known AI Session no longer applies
+        // — clear it now and wait for the host's next 'lastSessionInfo' push
+        // (sent right after restoreInFlightOperations for the new path).
+        if (isDifferentDocument || savedMarkdown === null) lastSessionId = null;
+        // `loadPath` has no request/response id, so an older switch-document
+        // request can resolve *after* a newer one a rapid ⌘[/⌘] (or another
+        // breadcrumb click) already superseded — e.g. back to A, then back to
+        // B again before A's reply lands. Only the reply matching the most
+        // recently requested target is allowed to land; a stale one is
+        // silently dropped instead of clobbering what the breadcrumb (already
+        // updated synchronously by the host) says is on screen.
+        if (isDifferentDocument && awaitingLoadPath && incomingPath !== awaitingLoadPath) {
+          if (breadcrumbCatchUpPath === incomingPath) breadcrumbCatchUpPath = '';
+          return;
+        }
         if (!isDifferentDocument && incoming === savedMarkdown) {
           if (incomingRevision) documentRevision = Math.max(documentRevision, incomingRevision);
           syncToolbar();
@@ -3577,7 +4229,12 @@
         var isFirst = savedMarkdown === null;
         var wasLoadingFromHome = loadingFromHome;
         loadingFromHome = false;
-        var applied = applyDocument(incoming, m.title || t('common.markdownDocDefault'), m.path || sourcePath, openedFromPicker || isFirst || isDifferentDocument, m.diskMarkdown);
+        // A load fired purely to catch the editor up with a breadcrumb the
+        // host already owns (crumb click / ⌘[/⌘ restore) must not re-`set()`
+        // the breadcrumb on completion — see `loadBreadcrumbDocument`.
+        var isBreadcrumbCatchUp = !!incomingPath && breadcrumbCatchUpPath === incomingPath;
+        breadcrumbCatchUpPath = '';
+        var applied = applyDocument(incoming, m.title || t('common.markdownDocDefault'), m.path || sourcePath, openedFromPicker || isFirst || isDifferentDocument, m.diskMarkdown, isBreadcrumbCatchUp);
         if (!applied) { syncToolbar(); return; } // still clear the "open" button's pending/disabled state
         documentRevision = incomingRevision || (isDifferentDocument ? 0 : documentRevision);
         if (m.draftRestored) {
@@ -3610,6 +4267,10 @@
             setStatus(t('status.contentUpdated'));
           }
         }
+        // Last statement of a document that actually landed in the editor:
+        // the boot gate can now reveal, so the empty state this push was about
+        // to replace is never shown at all.
+        bootNoticeState();
         return;
       }
       if (m.type === 'sourceMissing') {
@@ -3675,6 +4336,8 @@
       }
       if (m.type === 'error') {
         loadingFromHome = false; // don't let a stale flag mislabel the next unrelated document push
+        awaitingLoadPath = ''; // a failed loadPath must not keep blocking later replies as "stale"
+        breadcrumbCatchUpPath = '';
         // A save failure surfaces here (no matching 'savedMarkdown' will ever
         // arrive for that requestId) — resolve any awaiter as failed so the
         // unsaved-changes confirm doesn't hang forever waiting on it.

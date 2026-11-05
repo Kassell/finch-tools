@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Skin Studio</title>
+<style>
+  :root {
+    --ss-bg-root: var(--finch-bg-root, #f6f6f8);
+    --ss-bg-main: var(--finch-bg-main, #ffffff);
+    --ss-bg-elevated: var(--finch-bg-elevated, #ffffff);
+    --ss-bg-hover: var(--finch-bg-hover, #f0f1f3);
+    --ss-bg-active: var(--finch-bg-active, #e6e8eb);
+    --ss-text-primary: var(--finch-text-primary, #1c1c1f);
+    --ss-text-secondary: var(--finch-text-secondary, #5b5d66);
+    --ss-text-tertiary: var(--finch-text-tertiary, #9a9ca6);
+    --ss-accent: var(--finch-accent, #2f6fed);
+    --ss-accent-dim: var(--finch-accent-dim, #e2ebfd);
+    --ss-border: var(--finch-border, #e4e4e7);
+    --ss-radius-sm: var(--finch-radius-sm, 8px);
+    --ss-radius-md: var(--finch-radius-md, 12px);
+    --ss-radius-lg: var(--finch-radius-lg, 16px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ss-bg-root: var(--finch-bg-root, #17181b);
+      --ss-bg-main: var(--finch-bg-main, #1b1c20);
+      --ss-bg-elevated: var(--finch-bg-elevated, #222327);
+      --ss-bg-hover: var(--finch-bg-hover, #28292e);
+      --ss-bg-active: var(--finch-bg-active, #313239);
+      --ss-text-primary: var(--finch-text-primary, #f2f2f4);
+      --ss-text-secondary: var(--finch-text-secondary, #a7a8b2);
+      --ss-text-tertiary: var(--finch-text-tertiary, #6c6d78);
+      --ss-accent: var(--finch-accent, #6366f1);
+      --ss-accent-dim: var(--finch-accent-dim, #26264a);
+      --ss-border: var(--finch-border, #2b2c31);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--ss-bg-main);
+    color: var(--ss-text-primary);
+    font-family: var(--finch-font-body, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 16px 18px 32px;
+  }
+  h1, h2 { margin: 0; font-weight: 600; }
+  h1 { font-size: 16px; margin-bottom: 14px; }
+  h2 { font-size: 13px; color: var(--ss-text-secondary); text-transform: uppercase; letter-spacing: 0.02em; }
+  .card {
+    background: var(--ss-bg-elevated);
+    border: 1px solid var(--ss-border);
+    border-radius: var(--ss-radius-lg);
+    padding: 14px;
+    margin-bottom: 20px;
+  }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  button {
+    font: inherit;
+    cursor: pointer;
+    border-radius: var(--ss-radius-sm);
+    border: 1px solid var(--ss-border);
+    background: var(--ss-bg-elevated);
+    color: var(--ss-text-primary);
+    padding: 6px 12px;
+  }
+  button:hover { background: var(--ss-bg-hover); }
+  button.primary { background: var(--ss-accent); color: #fff; border-color: transparent; }
+  button.primary:hover { filter: brightness(1.05); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--ss-text-secondary); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  /* Inline Lucide icons (see the <symbol> sprite at the top of <body>).
+     Presentation properties inherit into <use> shadow content, so size and
+     stroke are set here once instead of on every path. */
+  .ico { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .ico-sm { width: 11px; height: 11px; }
+  .ico-lg { width: 20px; height: 20px; stroke-width: 1.75; }
+
+  /* ── Background section ── */
+  .bg-preview {
+    height: 120px;
+    border-radius: var(--ss-radius-md);
+    border: 1px dashed var(--ss-border);
+    background: var(--ss-bg-main);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    margin-bottom: 12px;
+    position: relative;
+  }
+  .bg-preview img { width: 100%; height: 100%; object-fit: cover; }
+  .bg-preview.tile img { object-fit: none; background-size: 64px 64px; }
+  .bg-preview.drag-over { border-color: var(--ss-accent); background: var(--ss-accent-dim); }
+  .bg-placeholder { color: var(--ss-text-tertiary); font-size: 12px; text-align: center; padding: 8px; pointer-events: none; }
+  .bg-placeholder .bg-hint { margin-top: 4px; font-size: 11px; opacity: 0.85; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--ss-border); border-radius: var(--ss-radius-sm); overflow: hidden; }
+  .seg button { border: none; border-radius: 0; background: transparent; }
+  .seg button + button { border-left: 1px solid var(--ss-border); }
+  .seg button.active { background: var(--ss-accent-dim); color: var(--ss-accent); font-weight: 600; }
+  .label { color: var(--ss-text-tertiary); font-size: 12px; margin-right: 2px; }
+  .row-actions { margin-left: auto; display: flex; align-items: center; gap: 2px; flex: none; }
+  .icon-btn {
+    position: relative;
+    width: 28px; height: 28px; padding: 0; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border-color: transparent; color: var(--ss-accent);
+  }
+  .icon-btn:hover { background: var(--ss-accent-dim); }
+  /* Custom tooltip. These buttons sit against the panel's right edge, so the
+     bubble is right-aligned and grows leftwards instead of overflowing. */
+  .icon-btn::after {
+    content: attr(data-tip);
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    padding: 5px 9px;
+    border-radius: var(--ss-radius-sm);
+    border: 1px solid var(--ss-border);
+    background: var(--ss-bg-elevated);
+    color: var(--ss-text-primary);
+    font-size: 12px; font-weight: 400; line-height: 1.3; letter-spacing: normal;
+    white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.16);
+    opacity: 0; pointer-events: none; visibility: hidden;
+    transform: translateY(2px);
+    transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+    z-index: 20;
+  }
+  .icon-btn:hover::after, .icon-btn:focus-visible::after {
+    opacity: 1; visibility: visible; transform: translateY(0);
+  }
+
+  /* ── Skin grid ── */
+  .grid { display: grid; gap: 12px; }
+  .skin-card {
+    position: relative;
+    border: 1px solid var(--ss-border);
+    border-radius: var(--ss-radius-lg);
+    background: var(--ss-bg-elevated);
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.12s ease, border-color 0.12s ease;
+  }
+  .skin-card:hover { transform: translateY(-2px); border-color: var(--ss-accent); }
+  .skin-card.active { border-color: var(--ss-accent); box-shadow: 0 0 0 2px var(--ss-accent-dim) inset; }
+  .thumb { height: 84px; display: flex; }
+  .thumb .side { width: 30%; }
+  .thumb .main { flex: 1; padding: 10px 8px; display: flex; flex-direction: column; gap: 5px; }
+  .thumb .bar { height: 5px; border-radius: 3px; }
+  .thumb .bar.w1 { width: 70%; }
+  .thumb .bar.w2 { width: 45%; }
+  .thumb .pill { width: 26px; height: 8px; border-radius: 4px; margin-top: 4px; }
+  .skin-name {
+    padding: 8px 10px;
+    /* Reserves room for the 20px hover-revealed action buttons so showing
+       them cannot grow the card, the row, or the page. */
+    min-height: 36px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .skin-name span.n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .check-badge {
+    position: absolute; top: 6px; right: 6px;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--ss-accent); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .check-badge .ico { width: 12px; height: 12px; stroke-width: 3; }
+  .del-btn {
+    border: none; background: rgba(0,0,0,0.55); color: #fff;
+    width: 20px; height: 20px; border-radius: 50%;
+    display: none; align-items: center; justify-content: center;
+    padding: 0; flex: none;
+  }
+  .skin-card:hover .del-btn { display: flex; }
+  .add-card {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    /* Matches a skin card exactly (2px border + 84px thumb + 36px name row)
+       so the dashed box is the same size even when it sits alone in a row. */
+    gap: 6px; min-height: 122px;
+    color: var(--ss-text-tertiary);
+    border: 1px dashed var(--ss-border); border-radius: var(--ss-radius-lg);
+    background: transparent; cursor: pointer; padding: 0;
+  }
+  .add-card .add-label { font-size: 12px; text-align: center; }
+  #btn-pick, #btn-clear { display: inline-flex; align-items: center; gap: 6px; }
+  .add-card:hover { color: var(--ss-accent); border-color: var(--ss-accent); background: var(--ss-bg-hover); }
+  .skin-actions { display: flex; gap: 4px; flex: none; }
+
+  /* ── Skeleton ── */
+  .skeleton { border-radius: var(--ss-radius-lg); overflow: hidden; border: 1px solid var(--ss-border); }
+  .skeleton .thumb, .skeleton .sk-line { background: linear-gradient(90deg, var(--ss-bg-hover) 25%, var(--ss-bg-active) 37%, var(--ss-bg-hover) 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
+  .skeleton .sk-line { height: 12px; margin: 10px; border-radius: 4px; width: 60%; }
+  @keyframes shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ss-bg-elevated); border: 1px solid var(--ss-border); border-radius: var(--ss-radius-md); padding: 8px 14px; font-size: 12px; color: var(--ss-text-primary); box-shadow: 0 4px 16px rgba(0,0,0,0.18); opacity: 0; pointer-events: none; transition: opacity 0.2s ease; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <!-- Inline Lucide sprite (lucide-static v1.44.0, ISC). The panel is a
+       packaged offline page, so the paths are embedded rather than fetched
+       from a CDN. Sizing/stroke come from the .ico class. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-copy" viewBox="0 0 24 24">
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24">
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24">
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </symbol>
+    <symbol id="i-paste" viewBox="0 0 24 24">
+      <path d="M11 14h10" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v1.344" />
+      <path d="m17 18 4-4-4-4" />
+      <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113" />
+      <rect x="8" y="2" width="8" height="4" rx="1" />
+    </symbol>
+    <symbol id="i-paintbrush" viewBox="0 0 24 24">
+      <path d="m14.622 17.897-10.68-2.913" />
+      <path d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944a2.41 2.41 0 0 1 0 3.408l-.944.944a.5.5 0 0 1-.707 0L8.354 7.348a.5.5 0 0 1 0-.707l.944-.944a2.41 2.41 0 0 1 3.408 0l.944.944a.5.5 0 0 0 .707 0z" />
+      <path d="M9 8c-1.804 2.71-3.97 3.46-6.583 3.948a.507.507 0 0 0-.302.819l7.32 8.883a1 1 0 0 0 1.185.204C12.735 20.405 16 16.792 16 15" />
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+      <path d="M20 6 9 17l-5-5" />
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </symbol>
+    <symbol id="i-image-plus" viewBox="0 0 24 24">
+      <path d="M16 5h6" />
+      <path d="M19 2v6" />
+      <path d="M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5" />
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+      <circle cx="9" cy="9" r="2" />
+    </symbol>
+  </svg>
+
+  <h1 id="t-title">Skin Studio</h1>
+
+  <section class="card" id="bg-card">
+    <div class="section-header"><h2 id="t-bg-heading">Home Background</h2></div>
+    <div class="bg-preview" id="bg-preview">
+      <div class="bg-placeholder" id="bg-placeholder">
+        <div id="t-bg-empty">No background image set</div>
+        <div class="bg-hint" id="t-bg-empty-hint">Drag &amp; drop an image here, or</div>
+      </div>
+      <img id="bg-image" style="display:none" alt="" />
+    </div>
+    <input type="file" id="bg-file-input" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" style="display:none" />
+    <div class="row">
+      <button class="primary" id="btn-pick" type="button">
+        <svg class="ico" aria-hidden="true"><use href="#i-image-plus"></use></svg>
+        <span id="t-choose">Choose image</span>
+      </button>
+      <button class="ghost" id="btn-clear" type="button" disabled>
+        <svg class="ico" aria-hidden="true"><use href="#i-x"></use></svg>
+        <span id="t-clear">Clear</span>
+      </button>
+    </div>
+    <div class="row">
+      <span class="label" id="t-placement">Placement</span>
+      <div class="seg" id="seg-placement">
+        <button data-value="fill" id="t-fill">Fill</button>
+        <button data-value="tile" id="t-tile">Tile</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label" id="t-tone">Brightness</span>
+      <div class="seg" id="seg-tone">
+        <button data-value="brightest">☀️</button>
+        <button data-value="bright">🌤️</button>
+        <button data-value="balanced">⛅</button>
+        <button data-value="dark">🌥️</button>
+        <button data-value="darkest">🌑</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="skins-section">
+    <div class="section-header">
+      <h2 id="t-skins-heading">Skins</h2>
+    </div>
+    <div class="row" style="margin-bottom: 12px;">
+      <span class="label" id="t-systemTheme">System appearance</span>
+      <div class="seg" id="seg-system-theme">
+        <button data-value="system" id="t-sys-auto">Auto</button>
+        <button data-value="light" id="t-sys-light">Light</button>
+        <button data-value="dark" id="t-sys-dark">Dark</button>
+      </div>
+      <div class="row-actions">
+        <button class="icon-btn" id="btn-ai-theme" type="button"
+                aria-label="Design a skin with AI" data-tip="Design a skin with AI">
+          <svg class="ico" aria-hidden="true"><use href="#i-paintbrush"></use></svg>
+        </button>
+        <button class="icon-btn" id="btn-import-skin" type="button"
+                aria-label="Import a shared skin" data-tip="Import a shared skin">
+          <svg class="ico" aria-hidden="true"><use href="#i-paste"></use></svg>
+        </button>
+      </div>
+    </div>
+    <div class="grid" id="skins-grid"></div>
+  </section>
+
+  <div class="toast" id="toast"></div>
+
+<script src="panel.js"></script>
+</body>
+</html>

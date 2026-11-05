@@ -1,5 +1,7 @@
 {
   "name": "成果库",
+  "tool.title": "记录成果",
+  "tool.description": "当你完成一份面向用户的文件，并需要将它收录到成果库时，使用此工具。支持 Markdown、Word、PowerPoint、PDF、Excel、网页和图片。\n\n只收录用户要阅读、审阅或分享的文件。不要收录源代码、配置文件或项目文件，例如 .ts、.js、.py、.css、.json；也不要收录只用来自检的产物，例如校验或试运行输出、调试截图、临时文件。\n\n修订：再次收录成果库里已有的 filePath，会把它记为同一条成果的新修订。一份稿子改了好几轮时，改写同一个文件再收录一次，不要把每一轮都记成新成果。\n\n标题：用用户的语言简短说明这份成果是什么。不要直接用文件名，也不要带版本或草稿标记（V2、v3、初稿、终稿、修订版、最新版……），修订会自动记录。\n\naction：\n  record — 将完成的文件收录到成果库，或给已收录的文件记一次新修订（需要 filePath 和 title；Markdown 请附 textPreview）\n  list   — 查看已收录的成果，可用 sessionId 筛选\n  remove — 按 id 删除一条成果记录",
   "appView": {
     "description": "浏览 AI 在所有会话中生成的成果。"
   },

@@ -2,12 +2,16 @@ import type * as finch from 'finch';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const WEBSITE = 'https://lite.ego.app/';
 const STATUS_MARKER = '__EGO_STATUS__';
+// How many consecutive failed liveness probes it takes to accept that Ego is
+// really gone. One miss is normally noise, and accepting it immediately is what
+// makes the badge text flip back and forth.
+const OFFLINE_CONFIRMATIONS = 2;
 let commandQueue: Promise<void> = Promise.resolve();
 
 type Ownership = 'agent' | 'agentDelegatedToUser' | 'user' | string;
@@ -40,16 +44,65 @@ interface EgoStatus {
   error?: string;
 }
 
-function egoBinary(): string | undefined {
-  const local = join(homedir(), '.local', 'bin', 'ego-browser');
-  if (existsSync(local)) return local;
+// Ego Lite ships for macOS and Windows, and both put the CLI in `~/.local/bin`
+// (Windows uses an .exe wrapper there). Anything else stays unsupported.
+const SUPPORTED_PLATFORMS = new Set(['darwin', 'win32']);
+
+function isSupportedPlatform(): boolean {
+  return SUPPORTED_PLATFORMS.has(process.platform);
+}
+
+function localBinDir(): string {
+  return join(homedir(), '.local', 'bin');
+}
+
+function egoBinary(): string {
+  const names = process.platform === 'win32' ? ['ego-browser.exe', 'ego-browser'] : ['ego-browser'];
+  for (const name of names) {
+    const local = join(localBinDir(), name);
+    if (existsSync(local)) return local;
+  }
+  // Fall back to PATH. On Windows CreateProcess appends `.exe` to a bare name,
+  // so `ego-browser` still resolves the installed wrapper.
   return 'ego-browser';
 }
 
+// Windows has no `open -a`: the app has to be found on disk. The official
+// installer puts ego.exe under "Citro Labs\ego lite\Application", but a
+// per-user install lands under LOCALAPPDATA instead, so probe the usual roots.
+function egoAppPath(): string | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const env = process.env;
+  const roots = [
+    env.ProgramFiles,
+    env['ProgramFiles(x86)'],
+    env.LOCALAPPDATA ? join(env.LOCALAPPDATA, 'Programs') : undefined,
+    env.LOCALAPPDATA,
+  ].filter((root): root is string => Boolean(root));
+  const layouts = [
+    ['Citro Labs', 'ego lite', 'Application', 'ego.exe'],
+    ['ego lite', 'Application', 'ego.exe'],
+    ['Citro Labs', 'ego lite', 'ego.exe'],
+    ['ego lite', 'ego.exe'],
+  ];
+  for (const root of roots) {
+    for (const layout of layouts) {
+      const candidate = join(root, ...layout);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
 async function processRunning(): Promise<boolean> {
-  if (process.platform !== 'darwin') return false;
+  if (!isSupportedPlatform()) return false;
   const probe = async () => {
     try {
+      if (process.platform === 'win32') {
+        // ego.exe is the program file of ego lite on Windows.
+        const { stdout } = await execFileAsync('tasklist', ['/FI', 'IMAGENAME eq ego.exe', '/NH'], { timeout: 3000 });
+        return /\bego\.exe\b/i.test(stdout);
+      }
       await execFileAsync('pgrep', ['-f', '/ego lite.app/Contents/MacOS/ego lite'], { timeout: 2000 });
       return true;
     } catch {
@@ -69,7 +122,7 @@ async function runCommand(file: string, args: string[], timeout = 20_000): Promi
     const child = execFile(file, args, {
       timeout,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, PATH: `${join(homedir(), '.local', 'bin')}:${process.env.PATH ?? ''}` },
+      env: { ...process.env, PATH: `${localBinDir()}${delimiter}${process.env.PATH ?? ''}` },
     }, (error, stdout, stderr) => {
       const output = [stdout, stderr].filter(Boolean).join('\n').trim();
       if (error) {
@@ -94,6 +147,43 @@ async function installedVersion(binary: string): Promise<string | undefined> {
     return output.split('\n').find((line) => line.startsWith('ego-browser '))?.replace('ego-browser ', '').trim();
   } catch {
     return undefined;
+  }
+}
+
+// The CLI is reached through a symlink chain that runs into Ego's own
+// `active_version_dir`, which Ego repoints while it self-upgrades. A probe that
+// lands inside that window fails even though Ego is installed and running, so
+// remember the last good version instead of treating one failed probe as
+// "not installed".
+const VERSION_TTL = 5 * 60_000;
+let cachedVersion: { value: string; at: number } | undefined;
+
+async function probeVersion(binary: string): Promise<string | undefined> {
+  if (cachedVersion && Date.now() - cachedVersion.at < VERSION_TTL) return cachedVersion.value;
+  const value = await installedVersion(binary);
+  if (value) cachedVersion = { value, at: Date.now() };
+  return value;
+}
+
+// Liveness is a fact about the process, not about the CLI: if the process is
+// there, Ego is installed and online no matter what the CLI says right now.
+async function probeInstall(binary: string, running: boolean): Promise<{
+  installed: boolean;
+  version?: string;
+}> {
+  const version = (running && cachedVersion?.value) || await probeVersion(binary);
+  return { installed: running || Boolean(version), version };
+}
+
+// Wait until a freshly launched Ego is actually up. A fixed sleep is not
+// enough on a cold start, and the following CLI call then looks like
+// "Ego is not detected" even though it is simply still starting.
+async function waitForRunning(deadlineMs = 12_000): Promise<boolean> {
+  const until = Date.now() + deadlineMs;
+  for (;;) {
+    if (await processRunning()) return true;
+    if (Date.now() >= until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 400));
   }
 }
 
@@ -137,18 +227,18 @@ function parseSpaces(output: string): EgoSpace[] {
 }
 
 async function getStatus(detailed = false): Promise<EgoStatus> {
-  if (process.platform !== 'darwin') {
+  if (!isSupportedPlatform()) {
     return { supported: false, installed: false, running: false, spaces: [], pageCount: 0 };
   }
 
   const binary = egoBinary();
-  if (!binary) return { supported: true, installed: false, running: false, spaces: [], pageCount: 0 };
-
-  const version = await installedVersion(binary);
-  if (!version) return { supported: true, installed: false, running: false, spaces: [], pageCount: 0 };
-
+  // Order matters: ask about the process first. Ego being alive is the ground
+  // truth for "installed and online"; a failing CLI probe is only allowed to
+  // speak when no process is running.
   const running = await processRunning();
-  if (!running) return { supported: true, installed: true, running: false, version, spaces: [], pageCount: 0 };
+  const { installed, version } = await probeInstall(binary, running);
+  const base: EgoStatus = { supported: true, installed, running, version, spaces: [], pageCount: 0 };
+  if (!running || !version) return base;
 
   try {
     const output = await runCommand(binary, ['nodejs', '-e', statusScript(detailed)], 10_000);
@@ -157,31 +247,68 @@ async function getStatus(detailed = false): Promise<EgoStatus> {
       if (space.tabs) return sum + space.tabs.length;
       return sum + (space.recentTabTitles?.length ?? 0);
     }, 0);
-    return { supported: true, installed: true, running: true, version, spaces, pageCount };
+    return { ...base, spaces, pageCount };
   } catch (error) {
+    // A script-level failure is a read problem, not an offline browser. Keep
+    // the reason for the menu/status output, but never let it decide liveness.
     return {
-      supported: true,
-      installed: true,
-      running: true,
-      version,
-      spaces: [],
-      pageCount: 0,
+      ...base,
       error: error instanceof Error ? error.message : String(error),
     };
   }
 }
 
+// Cheap heartbeat: process liveness plus cached install info, no Ego script.
+// The 5s poll therefore cannot disturb the user's task spaces and cannot fail
+// because of anything happening inside Ego.
+async function probeStatus(previous: EgoStatus | undefined): Promise<EgoStatus> {
+  if (!isSupportedPlatform()) {
+    return { supported: false, installed: false, running: false, spaces: [], pageCount: 0 };
+  }
+  const running = await processRunning();
+  const { installed, version } = await probeInstall(egoBinary(), running);
+  return {
+    supported: true,
+    installed,
+    running,
+    version: version ?? previous?.version,
+    // A cached space list is meaningless once the process is gone.
+    spaces: running ? previous?.spaces ?? [] : [],
+    pageCount: running ? previous?.pageCount ?? 0 : 0,
+  };
+}
+
 async function launchEgo(): Promise<void> {
-  if (process.platform !== 'darwin') throw new Error('Ego Lite currently supports macOS only.');
-  await execFileAsync('open', ['-a', 'ego lite'], { timeout: 5000 });
+  if (process.platform === 'darwin') {
+    await execFileAsync('open', ['-a', 'ego lite'], { timeout: 5000 });
+    return;
+  }
+  if (process.platform === 'win32') {
+    const exe = egoAppPath();
+    if (!exe) {
+      throw new Error(`The ego lite app was not found on this PC. Open it from the Start menu, or reinstall it from ${WEBSITE}.`);
+    }
+    // `start` hands off to the shell and returns at once; an already running
+    // ego.exe just brings its window forward, same as `open -a` on macOS.
+    await execFileAsync('cmd', ['/c', 'start', '', exe], { timeout: 5000 });
+    return;
+  }
+  throw new Error(`Ego Lite does not run on this platform (${process.platform}).`);
 }
 
 // Ego's CLI has no window/UI follow API: switchTaskSpace only changes the
 // command target, the window stays wherever the user left it. Bring Ego to
 // the front so agent activity is visible instead of running in the background.
 async function focusEgo(): Promise<void> {
-  if (process.platform !== 'darwin') return;
-  await execFileAsync('open', ['-a', 'ego lite'], { timeout: 5000 }).catch(() => {});
+  if (process.platform === 'darwin') {
+    await execFileAsync('open', ['-a', 'ego lite'], { timeout: 5000 }).catch(() => {});
+    return;
+  }
+  if (process.platform === 'win32') {
+    const exe = egoAppPath();
+    if (!exe) return;
+    await execFileAsync('cmd', ['/c', 'start', '', exe], { timeout: 5000 }).catch(() => {});
+  }
 }
 
 async function openWebsite(): Promise<void> {
@@ -385,21 +512,57 @@ export function activate(ctx: finch.ExtensionContext): void {
   }));
 
   let cachedStatus: EgoStatus | undefined;
-  let lastRefreshAt = 0;
+  let lastDetailAt = 0;
+  let offlineMisses = 0;
+  let recheckTimer: ReturnType<typeof setTimeout> | undefined;
   let refreshInFlight: Promise<void> | undefined;
   let pendingDetailedRefresh = false;
+
+  const isOnline = (status: EgoStatus | undefined): boolean =>
+    status?.installed === true && status.running === true;
+
+  const publishStatus = (next: EgoStatus, detailed: boolean): void => {
+    if (isOnline(cachedStatus) && !isOnline(next) && offlineMisses + 1 < OFFLINE_CONFIRMATIONS) {
+      // A single miss is noise: the app may be relaunching, pgrep may hiccup
+      // under load, or the CLI may be mid-upgrade. Hold the last reading and
+      // re-check shortly instead of flashing 离线 on and off.
+      offlineMisses += 1;
+      if (!recheckTimer) {
+        recheckTimer = setTimeout(() => {
+          recheckTimer = undefined;
+          void refreshStatus(false);
+        }, 600);
+      }
+      return;
+    }
+
+    const previousOnline = isOnline(cachedStatus);
+    const same = JSON.stringify(cachedStatus ?? null) === JSON.stringify(next);
+    offlineMisses = 0;
+    cachedStatus = next;
+    if (detailed) lastDetailAt = Date.now();
+    if (previousOnline !== isOnline(next)) {
+      // Extension logs land in the dev console rather than the app log file,
+      // so the menu (and action=status) is where this stays user-visible.
+      ctx.logger.info('Ego online state changed', {
+        online: isOnline(next),
+        running: next.running,
+        installed: next.installed,
+        version: next.version,
+        error: next.error,
+      });
+    }
+    if (!same) action.notifyUpdate();
+  };
+
   const refreshStatus = (detailed = false): Promise<void> => {
     if (refreshInFlight) {
       if (detailed) pendingDetailedRefresh = true;
       return refreshInFlight;
     }
 
-    refreshInFlight = getStatus(detailed)
-      .then((status) => {
-        cachedStatus = status;
-        lastRefreshAt = Date.now();
-        action.notifyUpdate();
-      })
+    refreshInFlight = (detailed ? getStatus(true) : probeStatus(cachedStatus))
+      .then((status) => publishStatus(status, detailed))
       .catch((error) => ctx.logger.warn('Ego background status refresh failed', error))
       .finally(() => {
         refreshInFlight = undefined;
@@ -413,17 +576,16 @@ export function activate(ctx: finch.ExtensionContext): void {
 
   const action = ctx.composerActions.register('ego-browser', {
     async getBadge() {
-      const online = cachedStatus?.installed === true
-        && cachedStatus.running === true
-        && !cachedStatus.error;
       if (cachedStatus?.supported === false) return { text: t('badge.unsupported'), active: false };
-      return online
+      // Online is about the browser being there, not about a status read
+      // having succeeded: a failed script must never read as "offline".
+      return isOnline(cachedStatus)
         ? { text: t('badge.online'), active: true }
         : { text: t('badge.offline'), active: false };
     },
 
     async getMenu(): Promise<finch.ComposerActionMenuItem[]> {
-      if (cachedStatus === undefined || Date.now() - lastRefreshAt > 3000) {
+      if (cachedStatus === undefined || Date.now() - lastDetailAt > 3000) {
         await refreshStatus(true);
       }
       if (!cachedStatus) {
@@ -494,6 +656,9 @@ export function activate(ctx: finch.ExtensionContext): void {
         id: '__summary__',
         label: t('menu.summary.spaces', { count: status.spaces.length }),
         description: t('menu.summary.pages', { count: status.pageCount }),
+        // When the space read fails while Ego is up, say so here instead of
+        // showing an empty list with no explanation.
+        hoverText: status.error ? t('status.error', { error: status.error }) : undefined,
         iconName: 'ext:ego-browser-icons/compass',
         disabled: true,
       }, {
@@ -581,7 +746,7 @@ export function activate(ctx: finch.ExtensionContext): void {
           await ctx.ui.showToast({ title: t('toast.launched'), variant: 'success', position: 'TC' });
           cachedStatus = undefined;
           action.notifyUpdate();
-          refreshStatus(true);
+          void waitForRunning().then(() => refreshStatus(true));
           return;
         }
         if (itemId.startsWith('resume:')) {
@@ -607,13 +772,14 @@ export function activate(ctx: finch.ExtensionContext): void {
           const script = `const result = await completeTaskSpace(${JSON.stringify(spaceId)}, { keep: false }); cliLog(JSON.stringify(result));`;
           await runCommand(binary, ['nodejs', '-e', script], 15_000);
           action.notifyUpdate();
-          refreshStatus(true);
+          refreshStatus(false);
           await ctx.ui.showToast({ title: t('toast.closed'), variant: 'success', position: 'TC' });
           return;
         }
         if (itemId.startsWith('tab:')) {
           const [spaceId, targetId] = unkey<[number, string]>(itemId.slice('tab:'.length));
           await launchEgo();
+          if (!(await waitForRunning())) throw new Error(t('error.launchTimeout'));
           const binary = egoBinary()!;
           const script = `await switchTaskSpace(${JSON.stringify(spaceId)}); await switchTab(${JSON.stringify(targetId)}); cliLog('ok');`;
           await runCommand(binary, ['nodejs', '-e', script], 10_000);
@@ -678,8 +844,7 @@ Reuse task spaces, respect user ownership, verify meaningful actions, and comple
 
       if (actionName === 'status') {
         const status = await getStatus(true);
-        cachedStatus = status;
-        action.notifyUpdate();
+        publishStatus(status, true);
         return { content: [{ type: 'text', text: statusText(status, t) }], isError: !status.supported || Boolean(status.error) };
       }
 
@@ -711,15 +876,15 @@ Reuse task spaces, respect user ownership, verify meaningful actions, and comple
         return { content: [{ type: 'text', text: 'action=switch_tab requires target_id from action=status.' }], isError: true };
       }
 
-      if (process.platform !== 'darwin') {
+      if (!isSupportedPlatform()) {
         return { content: [{ type: 'text', text: t('status.unsupported', { platform: process.platform }) }], isError: true };
       }
 
       const binary = egoBinary();
-      const version = binary ? await installedVersion(binary) : undefined;
-      if (!binary || !version) {
+      const version = await probeVersion(binary);
+      if (!version && !(await processRunning())) {
         return {
-          content: [{ type: 'text', text: `Ego Lite is not installed. Install it from ${WEBSITE}, finish onboarding, then retry.` }],
+          content: [{ type: 'text', text: t('status.notInstalled', { website: WEBSITE }) }],
           isError: true,
         };
       }
@@ -738,7 +903,11 @@ Reuse task spaces, respect user ownership, verify meaningful actions, and comple
       if (!(await processRunning())) {
         exec.progress.report({ stage: 'launching', message: pickProgress(t, 'launching') });
         await launchEgo();
-        await new Promise((resolve) => setTimeout(resolve, 1800));
+        // Cold starts regularly take longer than a fixed sleep, and the CLI
+        // call then fails in a way that looks like "Ego not detected".
+        if (!(await waitForRunning())) {
+          return { content: [{ type: 'text', text: t('error.launchTimeout') }], isError: true };
+        }
       } else {
         await focusEgo();
       }
@@ -748,8 +917,9 @@ Reuse task spaces, respect user ownership, verify meaningful actions, and comple
       exec.progress.report({ stage: ACTION_STAGES[actionName], message: pickProgress(t, ACTION_STAGES[actionName] ?? 'browsing') });
       try {
         const output = await runCommand(binary, ['nodejs', '-e', script], timeout);
-        action.notifyUpdate();
-        refreshStatus(true);
+        // Only the cheap liveness probe here: the menu refreshes spaces and
+        // tabs on demand, so an action must not re-run the invasive script.
+        refreshStatus(false);
         if (actionName === 'screenshot') {
           const path = output.split('__EGO_SHOT__').pop()?.split('\n')[0]?.trim();
           if (!path || !existsSync(path)) {
@@ -765,8 +935,7 @@ Reuse task spaces, respect user ownership, verify meaningful actions, and comple
         }
         return { content: [{ type: 'text', text: output || 'ok' }] };
       } catch (error) {
-        action.notifyUpdate();
-        refreshStatus(true);
+        refreshStatus(false);
         const message = error instanceof Error ? error.message : String(error);
         return { content: [{ type: 'text', text: message }], isError: true };
       }
@@ -774,7 +943,10 @@ Reuse task spaces, respect user ownership, verify meaningful actions, and comple
   }));
 
   refreshStatus(true);
-  const timer = setInterval(() => refreshStatus(true), 5_000);
+  // The heartbeat stays cheap: liveness only, no Ego script. Detailed reads
+  // (spaces/tabs) happen when the menu opens, on action=status and after
+  // launch/close, so the poll can neither disturb task spaces nor flicker.
+  const timer = setInterval(() => refreshStatus(false), 5_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(timer) });
 
   ctx.logger.info('ego-browser mini tool activated', { cached: Boolean(cachedStatus) });
