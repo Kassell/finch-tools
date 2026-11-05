@@ -170,17 +170,35 @@ export function checkSize(raw: unknown, fallback = DEFAULT_SIZE): SizeCheck {
 
 const QUALITY_ENUM = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const BACKGROUND_ENUM = ['auto', 'opaque', 'transparent'] as const;
-const FORMAT_ENUM = ['png', 'jpeg', 'webp'] as const;
+/**
+ * Output formats. Edits support GIF but not SVG (the API documents "SVG edits are
+ * not supported"), so the two paths get their own lists; the tool schema exposes
+ * the union and the request builder refuses the impossible combinations with an
+ * actionable message instead of an opaque 400.
+ */
+const GENERATE_FORMAT_ENUM = ['png', 'jpeg', 'webp', 'gif', 'svg'] as const;
+const EDIT_FORMAT_ENUM = ['png', 'jpeg', 'webp', 'gif'] as const;
+const FORMAT_ENUM = GENERATE_FORMAT_ENUM;
 const MODERATION_ENUM = ['auto', 'low'] as const;
+/** GIF frames: the endpoint accepts 2–16 and assumes 9. */
+const MIN_FRAMES = 2;
+const MAX_FRAMES = 16;
+const DEFAULT_FRAMES = 9;
+const MIN_FRAME_MS = 10;
+const MAX_FRAME_MS = 655_350;
+const DEFAULT_FRAME_MS = 200;
+/** Reasoning effort of the SVG author model — separate from image quality. */
+const SVG_EFFORT_ENUM = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 /** Planning effort, independent of the rendering quality (`complexity`). */
 const COMPLEXITY_ENUM = ['low', 'medium', 'high'] as const;
 
 type QualityOption = (typeof QUALITY_ENUM)[number];
 type BackgroundOption = (typeof BACKGROUND_ENUM)[number];
 type FormatOption = (typeof FORMAT_ENUM)[number];
+type SvgEffortOption = (typeof SVG_EFFORT_ENUM)[number];
 type ComplexityOption = (typeof COMPLEXITY_ENUM)[number];
 
-const EXT_BY_FORMAT: Record<FormatOption, string> = { png: 'png', jpeg: 'jpg', webp: 'webp' };
+const EXT_BY_FORMAT: Record<FormatOption, string> = { png: 'png', jpeg: 'jpg', webp: 'webp', gif: 'gif', svg: 'svg' };
 
 const MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
@@ -188,6 +206,7 @@ const MIME_BY_EXT: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
 };
 
 function pickEnum<T extends string>(raw: unknown, allowed: readonly T[], fallback: T): T {
@@ -879,11 +898,15 @@ async function addToGallery(ctx: finch.MiniToolContext, records: GalleryRecord[]
  * the picture has loaded — and `size: auto` means the request never told us.
  */
 export function readImageSize(buf: Buffer, format: string): { width: number; height: number } {
+  // Callers pass the saved extension, so "jpg" has to reach the same branch as
+  // "jpeg" — a JPEG used to come back as 0x0 and lose its aspect ratio.
+  const kind = format.toLowerCase().replace(/^\./, '');
+  const isJpeg = kind === 'jpg' || kind === 'jpeg' || kind === 'jpe';
   try {
-    if (format === 'png' && buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47) {
+    if (kind === 'png' && buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47) {
       return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
     }
-    if (format === 'jpeg' && buf.length > 16 && buf[0] === 0xff && buf[1] === 0xd8) {
+    if (isJpeg && buf.length > 16 && buf[0] === 0xff && buf[1] === 0xd8) {
       let off = 2;
       while (off + 9 < buf.length) {
         if (buf[off] !== 0xff) {
@@ -897,7 +920,7 @@ export function readImageSize(buf: Buffer, format: string): { width: number; hei
         off += 2 + buf.readUInt16BE(off + 2);
       }
     }
-    if (format === 'webp' && buf.length > 30 && buf.toString('ascii', 0, 4) === 'RIFF') {
+    if (kind === 'webp' && buf.length > 30 && buf.toString('ascii', 0, 4) === 'RIFF') {
       const tag = buf.toString('ascii', 8, 12);
       if (tag === 'VP8X') {
         return {
@@ -911,6 +934,28 @@ export function readImageSize(buf: Buffer, format: string): { width: number; hei
       if (tag === 'VP8L') {
         const bits = buf.readUInt32LE(17);
         return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+      }
+    }
+    if (kind === 'gif' && buf.length > 10 && buf.toString('ascii', 0, 3) === 'GIF') {
+      // The logical screen descriptor is fixed-width little endian.
+      return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+    }
+    if (kind === 'svg') {
+      const head = buf.toString('utf8', 0, Math.min(buf.length, 4096));
+      const svgTag = head.match(/<svg\b[^>]*>/i)?.[0] ?? '';
+      const attr = (name: string): number => {
+        const raw = svgTag.match(new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`, 'i'))?.[1] ?? '';
+        const value = Number.parseFloat(raw);
+        return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+      };
+      const width = attr('width');
+      const height = attr('height');
+      if (width && height) return { width, height };
+      const viewBox = (svgTag.match(/viewBox\s*=\s*["']([^"']+)["']/i)?.[1] ?? '').trim().split(/[\s,]+/);
+      const boxWidth = Number.parseFloat(viewBox[2] ?? '');
+      const boxHeight = Number.parseFloat(viewBox[3] ?? '');
+      if (Number.isFinite(boxWidth) && Number.isFinite(boxHeight) && boxWidth > 0 && boxHeight > 0) {
+        return { width: Math.round(boxWidth), height: Math.round(boxHeight) };
       }
     }
   } catch {
@@ -1301,6 +1346,12 @@ interface CreateImageInput {
   background?: string;
   output_format?: string;
   output_compression?: number;
+  /** GIF only: 2–16 frames (default 9) and their delay in ms (default 200). */
+  frame_count?: number;
+  frame_duration_ms?: number;
+  /** SVG only: which model authors the vector, and its reasoning effort. */
+  svg_model?: string;
+  svg_effort?: string;
   moderation?: string;
   n?: number;
   partial_images?: number;
@@ -1389,13 +1440,37 @@ export function activate(ctx: finch.MiniToolContext): void {
           output_format: {
             type: 'string',
             enum: FORMAT_ENUM as unknown as string[],
-            description: 'png (default, best quality), jpeg (fastest), or webp.',
+            description:
+              'png (default, best quality), jpeg (fastest), webp, gif (short animation, 2-16 frames) or svg (vector; generated fresh from the prompt only — it cannot be used while editing reference images).',
           },
           output_compression: {
             type: 'number',
             minimum: 0,
             maximum: 100,
-            description: 'Compression level 0-100 for jpeg/webp output only.',
+            description: 'Compression level 0-100 for jpeg/webp output only; ignored for png, gif and svg.',
+          },
+          frame_count: {
+            type: 'number',
+            minimum: MIN_FRAMES,
+            maximum: MAX_FRAMES,
+            description: `GIF only: how many frames to animate, ${MIN_FRAMES}-${MAX_FRAMES} (default ${DEFAULT_FRAMES} when omitted). Omit for stills.`,
+          },
+          frame_duration_ms: {
+            type: 'number',
+            minimum: MIN_FRAME_MS,
+            maximum: MAX_FRAME_MS,
+            description: `GIF only: delay per frame in milliseconds (default ${DEFAULT_FRAME_MS}), rounded to the nearest 10 ms.`,
+          },
+          svg_model: {
+            type: 'string',
+            description:
+              'SVG only: the model that authors the vector, when your account has SVG model selection enabled. The top-level model still renders the reference image. Omit to let the endpoint choose.',
+          },
+          svg_effort: {
+            type: 'string',
+            enum: SVG_EFFORT_ENUM as unknown as string[],
+            description:
+              'SVG only: reasoning effort of the SVG author (none, minimal, low, medium, high, xhigh, max), independent of image quality. Needs svg_model.',
           },
           moderation: {
             type: 'string',
@@ -1512,17 +1587,67 @@ export function activate(ctx: finch.MiniToolContext): void {
             isError: true,
           };
         }
+        // Inputs are raster only (png/jpeg/webp). Now that the tool can also
+        // produce GIF and SVG, those files are exactly what a user will try to
+        // feed back in, so say why instead of letting the API reject the upload.
+        const unfitInput = [...refPaths, ...(maskPath ? [maskPath] : []), ...(markupPath ? [markupPath] : [])].find(
+          (filePath) => !['.png', '.jpg', '.jpeg', '.webp'].includes(path.extname(filePath).toLowerCase()),
+        );
+        if (unfitInput) {
+          return {
+            content: [{ type: 'text', text: t('error.inputFormat', { file: path.basename(unfitInput) }) }],
+            isError: true,
+          };
+        }
 
         const n = clampInt(input.n, 1, 10, 1);
         const partialImages = clampInt(input.partial_images, 0, 3, 0);
         const background = pickEnum(input.background, BACKGROUND_ENUM, 'auto' as BackgroundOption);
-        let format = pickEnum(input.output_format, FORMAT_ENUM, 'png' as FormatOption);
-        if (background === 'transparent' && format === 'jpeg') format = 'png';
+        const requestedFormat = pickEnum(input.output_format, FORMAT_ENUM, 'png' as FormatOption);
+        /** Things the caller asked for that the API cannot do, reported in the result. */
+        const warnings: string[] = [];
+
+        // The documented limits of the two new formats, checked locally: each
+        // one would otherwise come back as an opaque 400.
+        if (requestedFormat === 'svg' && refPaths.length) {
+          return { content: [{ type: 'text', text: t('error.svgEdit') }], isError: true };
+        }
+        if (requestedFormat === 'svg' && n > 1) {
+          return { content: [{ type: 'text', text: t('error.svgSingle') }], isError: true };
+        }
+        if (requestedFormat === 'gif' && (maskPath || markupPath)) {
+          return { content: [{ type: 'text', text: t('error.gifMask') }], isError: true };
+        }
+
+        let format = requestedFormat;
+        // Transparency is a png/webp feature; anything else would silently lose it.
+        if (background === 'transparent' && format !== 'png' && format !== 'webp') {
+          warnings.push(t('warn.transparentFormat', { format }));
+          format = 'png';
+        }
+        if (format === 'gif' || format === 'svg') {
+          if (partialImages > 0) warnings.push(t('warn.streamUnsupported', { format }));
+          if (input.output_compression !== undefined) warnings.push(t('warn.compressionDropped', { format }));
+        }
         // Only forward values the API documents: an unknown complexity is dropped
         // rather than sent as a guess.
         const rawComplexity = typeof input.complexity === 'string' ? input.complexity.trim().toLowerCase() : '';
         const complexity = (COMPLEXITY_ENUM as readonly string[]).includes(rawComplexity) ? rawComplexity : '';
         const compression = clampInt(input.output_compression, 0, 100, -1);
+        // GIF timing: 2–16 frames, delay rounded to the nearest 10 ms.
+        const frameCount = clampInt(input.frame_count, MIN_FRAMES, MAX_FRAMES, DEFAULT_FRAMES);
+        if (input.frame_count !== undefined && Number(input.frame_count) !== frameCount) {
+          warnings.push(t('warn.framesClamped', { requested: String(input.frame_count), used: String(frameCount) }));
+        }
+        const rawFrameMs = clampInt(input.frame_duration_ms, MIN_FRAME_MS, MAX_FRAME_MS, DEFAULT_FRAME_MS);
+        const frameDuration = Math.min(MAX_FRAME_MS, Math.max(MIN_FRAME_MS, Math.round(rawFrameMs / 10) * 10));
+        // The SVG author is a separate selection: without a model id we must omit
+        // the whole object, so an effort alone is not enough to send anything.
+        const svgModel = typeof input.svg_model === 'string' ? input.svg_model.trim().slice(0, 120) : '';
+        const rawSvgEffort = typeof input.svg_effort === 'string' ? input.svg_effort.trim().toLowerCase() : '';
+        const svgEffort = (SVG_EFFORT_ENUM as readonly string[]).includes(rawSvgEffort) ? rawSvgEffort : '';
+        if (svgModel && format !== 'svg') warnings.push(t('warn.svgIgnored'));
+        if (format === 'svg' && svgEffort && !svgModel) warnings.push(t('warn.svgEffortNeedsModel'));
         const moderation = pickEnum(input.moderation, MODERATION_ENUM, 'auto');
         const safetyIdentifier =
           typeof input.safety_identifier === 'string' ? input.safety_identifier.trim().slice(0, 128) : '';
@@ -1549,6 +1674,15 @@ export function activate(ctx: finch.MiniToolContext): void {
         if (input.background !== undefined && background !== 'auto') optional.background = background;
         if (input.output_format !== undefined) optional.output_format = format;
         if (compression >= 0 && (format === 'jpeg' || format === 'webp')) optional.output_compression = compression;
+        // GIF-only knobs stay omitted for every other format: a relay or an older
+        // model rejects parameters it does not implement.
+        if (format === 'gif') {
+          if (input.frame_count !== undefined) optional.frame_count = frameCount;
+          if (input.frame_duration_ms !== undefined) optional.frame_duration_ms = frameDuration;
+        }
+        if (format === 'svg' && svgModel) {
+          optional.svg = { model: svgModel, ...(svgEffort ? { reasoning: { effort: svgEffort } } : {}) };
+        }
         if (input.moderation !== undefined && moderation !== 'auto') optional.moderation = moderation;
         if (complexity) optional.complexity = complexity;
         if (safetyIdentifier) optional.safety_identifier = safetyIdentifier;
@@ -1563,7 +1697,7 @@ export function activate(ctx: finch.MiniToolContext): void {
           const resolution = sizeResolution(size);
           const outDir = path.join(ctx.storagePath, 'images');
           const previewDir = path.join(outDir, '.preview');
-          const stream = partialImages > 0 && n === 1 && !refPaths.length;
+          const stream = partialImages > 0 && n === 1 && !refPaths.length && format !== 'gif' && format !== 'svg';
 
           const result = await withHeartbeat(
             (started) =>
@@ -1654,11 +1788,14 @@ export function activate(ctx: finch.MiniToolContext): void {
             ...(maskPath ? ['masked: yes'] : []),
             ...(markupPath ? ['markup: yes'] : []),
             ...(complexity ? [`complexity: ${complexity}`] : []),
+            ...(format === 'gif' ? [`frames: ${frameCount} × ${frameDuration}ms`] : []),
+            ...(format === 'svg' && svgModel ? [`svg author: ${svgModel}${svgEffort ? ` / ${svgEffort}` : ''}`] : []),
           ];
           const lines = [
             `${t('result.generated', { count: String(savedPaths.length) })} via ${baseUrl}.`,
             `> ${notes.join(' · ')}`,
             ...(result.fromPartial ? [`! ${t('result.fromPartial')}`] : []),
+            ...warnings.map((warning) => `! ${warning}`),
             ...savedPaths,
           ];
           return { content: [{ type: 'text', text: lines.join('\n') }] };

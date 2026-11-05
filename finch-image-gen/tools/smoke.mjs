@@ -164,6 +164,12 @@ function makeExec() {
 
 // ── fetch stub ───────────────────────────────────────────────────────────────
 
+/** 2×2 GIF: header + logical screen descriptor, enough to read a size from. */
+const GIF_2X2 = Buffer.concat([
+  Buffer.from('GIF89a', 'ascii'),
+  Buffer.from([0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x3b]),
+]);
+
 const PNG_1PX = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
@@ -982,6 +988,103 @@ panelSent = sent;
 
   ctx.ui.showModalDialog = originalDialog;
   await store.delete('proxyUrl');
+}
+
+// 20 — Image 2.6's GIF and SVG output.
+{
+  const refPath = join(storagePath, 'ref.png');
+  writeFileSync(refPath, PNG_1PX);
+
+  // GIF: frames only mean something with gif, and only get sent when asked for.
+  const gif = await run({ ...base, output_format: 'gif' });
+  check('gif is sent as output_format', gif.call.json.output_format === 'gif', JSON.stringify(gif.call.json));
+  check('gif saves a .gif file', gif.text.includes('.gif'), gif.text);
+  check('gif leaves the frame knobs to the endpoint', gif.call.json.frame_count === undefined && gif.call.json.frame_duration_ms === undefined);
+
+  const animated = await run({ ...base, output_format: 'gif', frame_count: 6, frame_duration_ms: 125 });
+  check('gif frames are forwarded', animated.call.json.frame_count === 6, JSON.stringify(animated.call.json));
+  check('frame delay is rounded to the nearest 10 ms', animated.call.json.frame_duration_ms === 130, String(animated.call.json.frame_duration_ms));
+  check('the result reports the animation', animated.text.includes('6 × 130ms'), animated.text);
+
+  const clamped = await run({ ...base, output_format: 'gif', frame_count: 99 });
+  check('frame_count is clamped to 16', clamped.call.json.frame_count === 16, String(clamped.call.json.frame_count));
+  check('the clamp is reported, not hidden', clamped.text.split('\n').some((line) => line.startsWith('!')), clamped.text);
+
+  const framesOnPng = await run({ ...base, frame_count: 4 });
+  check('frame knobs are dropped for still images', framesOnPng.call.json.frame_count === undefined, JSON.stringify(framesOnPng.call.json));
+
+  const gifMask = await run({ ...base, output_format: 'gif', reference_image_paths: [refPath], mask_path: refPath });
+  check('gif refuses masks before sending', gifMask.result.isError === true && gifMask.call === undefined, gifMask.text);
+
+  const gifStream = await run({ ...base, output_format: 'gif', partial_images: 2 });
+  check('gif does not stream', gifStream.call.json.stream === undefined, JSON.stringify(gifStream.call.json));
+  check('the missing preview is reported', gifStream.text.split('\n').some((line) => line.startsWith('!')), gifStream.text);
+
+  const gifCompressed = await run({ ...base, output_format: 'gif', output_compression: 40 });
+  check('gif drops output_compression', gifCompressed.call.json.output_compression === undefined);
+
+  // GIF edits do exist — only SVG is prompt-only.
+  const gifEdit = await run({ ...base, output_format: 'gif', reference_image_paths: [refPath] });
+  check('an edit can return a gif', gifEdit.result.isError !== true && gifEdit.call.url.endsWith('/images/edits'), gifEdit.text);
+
+  // SVG: generate only, one file, no streaming, no compression.
+  const svg = await run({ ...base, output_format: 'svg' });
+  check('svg is sent as output_format', svg.call.json.output_format === 'svg', JSON.stringify(svg.call.json));
+  check('svg saves a .svg file', svg.text.includes('.svg'), svg.text);
+  check('svg omits the author object unless asked', svg.call.json.svg === undefined, JSON.stringify(svg.call.json));
+
+  const authored = await run({ ...base, output_format: 'svg', svg_model: 'svg-author-x', svg_effort: 'high' });
+  check(
+    'the svg author and its effort are sent together',
+    JSON.stringify(authored.call.json.svg) === JSON.stringify({ model: 'svg-author-x', reasoning: { effort: 'high' } }),
+    JSON.stringify(authored.call.json.svg),
+  );
+  check('the result names the svg author', authored.text.includes('svg-author-x'), authored.text);
+
+  const effortOnly = await run({ ...base, output_format: 'svg', svg_effort: 'low' });
+  check('an effort without a model sends no svg object', effortOnly.call.json.svg === undefined, JSON.stringify(effortOnly.call.json));
+  check('the ignored effort is reported', effortOnly.text.split('\n').some((line) => line.startsWith('!')), effortOnly.text);
+
+  const svgEdit = await run({ ...base, output_format: 'svg', reference_image_paths: [refPath] });
+  check('svg refuses to edit a reference image', svgEdit.result.isError === true && svgEdit.call === undefined, svgEdit.text);
+
+  const svgMany = await run({ ...base, output_format: 'svg', n: 3 });
+  check('svg insists on a single file', svgMany.result.isError === true && svgMany.call === undefined, svgMany.text);
+
+  const svgStream = await run({ ...base, output_format: 'svg', partial_images: 1 });
+  check('svg does not stream', svgStream.call.json.stream === undefined, JSON.stringify(svgStream.call.json));
+
+  const svgWithModel = await run({ ...base, output_format: 'svg', svg_model: 'author-y' });
+  const svgIgnored = await run({ ...base, svg_model: 'author-y' });
+  check('svg_model is dropped for a png request', svgIgnored.call.json.svg === undefined && svgIgnored.text.split('\n').some((line) => line.startsWith('!')), svgIgnored.text);
+  check('svg_model alone still sends the object', JSON.stringify(svgWithModel.call.json.svg) === JSON.stringify({ model: 'author-y' }));
+
+  // Transparency stays a png/webp feature.
+  const transparentGif = await run({ ...base, output_format: 'gif', background: 'transparent' });
+  check('a transparent gif falls back to png', transparentGif.call.json.output_format === 'png', JSON.stringify(transparentGif.call.json));
+  check('the transparent fallback is explained', transparentGif.text.split('\n').some((line) => line.startsWith('!')), transparentGif.text);
+
+  // Generated gif/svg files cannot be fed back in as inputs.
+  const gifPath = join(storagePath, 'input.gif');
+  writeFileSync(gifPath, GIF_2X2);
+  const badInput = await run({ ...base, reference_image_paths: [gifPath] });
+  check('a gif is refused as a reference image', badInput.result.isError === true && badInput.call === undefined, badInput.text);
+  check('the refusal names the file', badInput.text.includes('input.gif'), badInput.text);
+}
+
+// 21 — the new formats are measurable and saved like the old ones.
+{
+  // GIF: the logical screen descriptor, little endian.
+  const gif = readImageSize(GIF_2X2, 'gif');
+  check('readImageSize reads a GIF screen descriptor', gif.width === 2 && gif.height === 2, JSON.stringify(gif));
+  // SVG: width/height first, then viewBox.
+  const svgAttr = readImageSize(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><rect/></svg>'), 'svg');
+  check('readImageSize reads SVG width/height', svgAttr.width === 300 && svgAttr.height === 150, JSON.stringify(svgAttr));
+  const svgBox = readImageSize(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 96"><rect/></svg>'), 'svg');
+  check('readImageSize falls back to the SVG viewBox', svgBox.width === 64 && svgBox.height === 96, JSON.stringify(svgBox));
+  // The saved extension is "jpg", which used to miss the jpeg branch entirely.
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x40, 0x00, 0x60, 0x03, 0, 0, 0, 0, 0, 0, 0]);
+  check('readImageSize reads a JPEG by its saved extension', readImageSize(jpeg, 'jpg').width === 96 && readImageSize(jpeg, 'jpg').height === 64, JSON.stringify(readImageSize(jpeg, 'jpg')));
 }
 
 rmSync(storagePath, { recursive: true, force: true });

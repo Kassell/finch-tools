@@ -65,8 +65,17 @@ Editing needs a Composer to write into, so the editor opens from a session panel
 | Final assets | `high`, `xhigh` or `max` quality |
 | Transparent background | `background: transparent` (with `png` or `webp`) |
 | Small file | `jpeg` or `webp`, optionally with a compression level |
+| Short animation | `output_format: gif` with `frame_count` (2-16, default 9) and `frame_duration_ms` (default 200) |
+| Vector output | `output_format: svg` — prompt only, one file, no streaming |
 
 Quality and size both drive cost and waiting time, so it's worth drafting low and only raising both for the version you keep.
+
+### GIF and SVG (Image 2.6)
+
+- **GIF** animates your prompt over 2–16 frames and saves a real `.gif`. Ask for it in words ("做成 6 帧的 gif，每帧 130 毫秒") or pass `frame_count` / `frame_duration_ms`. GIF has no masks, no streaming previews and no compression level; it can still be an *edit* of a reference image.
+- **SVG** gives you a vector file, which is what you want when the result has to scale, be printed, or be edited as shapes later. It is generated from the prompt only — a reference image cannot be turned into an SVG — and always exactly one file. If your account has SVG model selection, `svg_model` picks the author model and `svg_effort` its reasoning effort; otherwise leave both out.
+- Both show up in the gallery like any other image: the card keeps its aspect ratio, and the editor opens them for annotation.
+- Reference images, masks and markup stay **png / jpeg / webp** — a generated gif or svg cannot be fed back in as an input.
 
 ## Using a relay endpoint
 
@@ -156,8 +165,17 @@ When something does fail, the error message is specific rather than a bare `fetc
 | 出成品 | 画质 `high`、`xhigh` 或 `max` |
 | 透明背景 | `background: transparent`（配 `png` 或 `webp`） |
 | 想要小文件 | `jpeg` 或 `webp`，可再指定压缩率 |
+| 短动画 | `output_format: gif`，配合 `frame_count`（2-16，默认 9）与 `frame_duration_ms`（默认 200） |
+| 矢量图 | `output_format: svg`——只按提示词生成，一次一张，不支持预览流 |
 
 画质和尺寸同时决定费用和耗时，建议先用低画质试，定下来再调高跑成品。
+
+### GIF 与 SVG（Image 2.6）
+
+- **GIF** 会把提示词变成 2–16 帧动画，落地是真正的 `.gif` 文件。可以直接说「做成 6 帧的 gif，每帧 130 毫秒」，也可以传 `frame_count` / `frame_duration_ms`。GIF 不支持遮罩、预览流和压缩级别；但它可以作为**改图**的产物（参考图 → gif）。
+- **SVG** 出的是矢量文件，适合要放大、要印刷、或者之后还要按图形继续编辑的场景。它只能从提示词生成——参考图不能改写成 SVG——而且永远只出一张。账号开通了 SVG 模型选择时，用 `svg_model` 指定作者模型、`svg_effort` 指定它的推理强度；没开通就都别传。
+- 两者在图片库里和普通图片一样：卡片保持自己的宽高比，编辑器也能直接打开标注。
+- 参考图、遮罩和标注图仍然只能是 **png / jpeg / webp**——生成出来的 gif、svg 不能再当作输入图。
 
 ## 示例提示词
 

@@ -72,7 +72,11 @@ await page.addInitScript(() => {
         const kept = state.thumbs.get(message.filePath);
         if (message.variant === 'thumb' && kept) return emit({ type: 'imageData', filePath: message.filePath, variant: 'thumb', dataUrl: kept });
         // A card can be dropped again while its bytes are still in flight.
-        const record = records.find((r) => r.filePath === message.filePath) ?? { width: 640, height: 480 };
+        const record = state.records.find((r) => r.filePath === message.filePath) ?? { width: 640, height: 480 };
+        // A gif and an svg have to arrive as themselves: the browser, not the
+        // test, must prove those two decode inside the same card layout.
+        if (record.format === 'svg') return emit({ type: 'imageData', filePath: message.filePath, variant: 'full', dataUrl: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMTUwIiB2aWV3Qm94PSIwIDAgMzAwIDE1MCI+PHJlY3Qgd2lkdGg9IjMwMCIgaGVpZ2h0PSIxNTAiIGZpbGw9IiMzMzU1NzciLz48Y2lyY2xlIGN4PSIxNTAiIGN5PSI3NSIgcj0iNDAiIGZpbGw9IiNlOGM3YWIiLz48L3N2Zz4=' });
+        if (record.format === 'gif') return emit({ type: 'imageData', filePath: message.filePath, variant: 'full', dataUrl: 'data:image/gif;base64,R0lGODlhAgACAAAAADs=' });
         const canvas = document.createElement('canvas');
         canvas.width = record.width; canvas.height = record.height;
         const ctx = canvas.getContext('2d');
@@ -964,5 +968,36 @@ async function runFailureAndThemeTests() {
   await page.locator('.card').first().locator('[data-act="remove"]').click({ force: true });
   await page.waitForFunction((n) => document.querySelectorAll('.card').length === n - 1, before);
   assert.equal(await page.evaluate(() => window.__host.messages.filter((m) => m.type === 'deleteRecord').at(-1).deleteFile), false);
+// A GIF and an SVG produced by Image 2.6 land in the gallery like anything else.
+{
+  await page.goto(`${origin}/`);
+  await page.waitForSelector('.card');
+  await page.evaluate(() => {
+    const base = window.__host.records[0];
+    const gif = { ...base, id: 'image-gif', filePath: '/gallery/anim.gif', name: 'anim.gif', format: 'gif', width: 320, height: 240 };
+    const svg = { ...base, id: 'image-svg', filePath: '/gallery/vector.svg', name: 'vector.svg', format: 'svg', width: 300, height: 150 };
+    window.__host.records = [gif, svg, ...window.__host.records];
+    window.__host.snapshot();
+  });
+  await settle();
+  const decoded = await page.evaluate(() => ['image-gif', 'image-svg'].map((id) => {
+    const card = document.querySelector(`.card[data-id="${id}"]`);
+    const img = card.querySelector('img');
+    const box = card.getBoundingClientRect();
+    return { id, loaded: img.dataset.loaded, natural: [img.naturalWidth, img.naturalHeight], ratio: Math.round((box.width / box.height) * 100) / 100 };
+  }));
+  const gif = decoded.find((item) => item.id === 'image-gif');
+  const svg = decoded.find((item) => item.id === 'image-svg');
+  assert(gif.loaded === '1' && gif.natural[0] === 2, `A gif decodes in its card (${JSON.stringify(gif)})`);
+  assert(svg.loaded === '1' && svg.natural[0] === 300 && svg.natural[1] === 150, `An svg decodes in its card (${JSON.stringify(svg)})`);
+  // Aspect ratio comes from the record the tool saved, not from the browser.
+  assert(Math.abs(gif.ratio - 320 / 240) < 0.05, `A gif keeps its recorded aspect ratio (${gif.ratio})`);
+  assert(Math.abs(svg.ratio - 300 / 150) < 0.05, `An svg keeps its recorded aspect ratio (${svg.ratio})`);
+  // The editor opens them too — the meta line reports the real format.
+  await page.locator('.card[data-id="image-svg"] [data-act="edit"]').click({ force: true });
+  await page.waitForFunction(() => document.getElementById('editorMeta')?.textContent?.includes('SVG'));
+  console.log('ok UI: GIF and SVG records decode, keep their aspect ratio and open in the editor');
+}
+
   console.log('ok UI: dark theme, 280/420/1000px editor, slow/failed image retry, safe removal');
 }
