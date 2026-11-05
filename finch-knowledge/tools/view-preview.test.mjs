@@ -109,13 +109,11 @@ test('row clicks open documents but text-selection gestures do not', async () =>
   assert.match(buildRow, /dragged \|\| moved \|\| selecting \|\| hasRowSelection\(\)/, 'both pointer movement and text selections suppress activation');
   assert.match(buildRow, /row\.addEventListener\('keydown',[\s\S]{0,220}openDocument\(doc\)/, 'focused keyboard activation remains explicit');
   assert.match(view, /function openDocument\(doc: Document\): void \{[\s\S]{0,200}openListedDocument\(bridge, doc\.name, doc\.path, reveal\)/);
-  // The button's icon is the route: an eye where Finch previews, a folder where it does not.
-  assert.match(view, /const previewable = previewRoute\(doc\.name\) !== 'external';/);
-  assert.match(view, /const primary = previewable \? icon\(Eye, tr\('preview'\)\) : icon\(FolderOpen, tr\('reveal'\)\);/);
-  assert.match(view, /primary\.addEventListener\('click', \(\) => openDocument\(doc\)\);/);
-  // Opening the managed copy externally is also one click away for every type.
-  assert.match(html, /id="row-open"/);
-  assert.match(view, /byId\('row-open'\)\.addEventListener\('click', \(\) => \{\s*\n\s*if \(rowMenuDoc\) request\('reveal'/);
+  // The row previews; the separate folder button reveals the original without a duplicate menu entry.
+  assert.match(buildRow, /const primary = icon\(FolderOpen, tr\('reveal'\)\);/);
+  assert.match(buildRow, /primary\.addEventListener\('click', \(\) => request\('reveal', \{ id: doc\.id \}\)\);/);
+  assert.doesNotMatch(html, /id="row-open"/);
+  assert.match(html, /id="row-classify"/);
 });
 
 test('both tooltips exist for both locales and in the page English fallback', async () => {

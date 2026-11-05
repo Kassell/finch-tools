@@ -31,9 +31,13 @@ function fixture(selectedTops = [900], height = 300, contentHeight = 1000) {
     ['documents-scroll', { scrollTop: 2400 }],
     ['library-menu', { hidden: true, style: {}, classList: { add() {} }, getBoundingClientRect: () => box }],
     ['library-menu-button', { setAttribute() {}, getBoundingClientRect: () => box }],
+    ['library-picker-button', { setAttribute() {}, getBoundingClientRect: () => box }],
+    ['onboard-library-action', { setAttribute() {}, getBoundingClientRect: () => box }],
+    ['library-actions-menu', { hidden:true }],
   ]);
   const context = createContext({
-    window: { scrollX: 0, scrollY: 0, innerWidth: 1200, innerHeight: 800 },
+    window: { finch:{postMessage(){}},scrollX: 0, scrollY: 0, innerWidth: 1200, innerHeight: 800 },
+    isLibraryScoped:()=>false,setInterval:()=>0,clearInterval:()=>{},
     document: { body: { append(element) { element.portaled = true; } }, getElementById: (id) => elements.get(id) },
   });
   runInContext(code, context);

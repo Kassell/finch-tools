@@ -1,8 +1,8 @@
 import type * as finch from 'finch';
-import { Archive, Check, Circle, CircleAlert, CircleCheck, createElement, ChevronRight, Folder, EllipsisVertical, Eye, Files, FolderInput, FolderOpen, FolderPlus, HardDrive, Loader, PenLine, Plus, RefreshCw, Search, Tag as TagIcon, Trash2, TriangleAlert, X } from 'lucide';
+import { Cpu, EyeOff, Archive, Check, Circle, CircleAlert, CircleCheck, createElement, ChevronRight, Folder, EllipsisVertical, Settings, Files, FolderInput, FolderOpen, FolderPlus, HardDrive, Loader, PenLine, Plus, RefreshCw, Search, Tag as TagIcon, Trash2, TriangleAlert, X } from 'lucide';
 import type { IconNode } from 'lucide';
 import { highlightTerms, snippetParts } from './snippet.js';
-import { openListedDocument, previewRoute } from './preview.js';
+import { openListedDocument } from './preview.js';
 import { inScope } from './scope.js';
 import type { DocumentState } from './document-status.js';
 import { createSortMenu, type SortOrder } from './sort-menu.js';
@@ -11,17 +11,19 @@ import { createColorSurface } from './color-picker.js';
 import { wireScrollbars } from './scrollbars.js';
 import { isLibraryScoped } from './library-scope.js';
 import type { LibraryRecord } from './libraries.js';
+import type {LibraryState,LibraryStateRow} from './library-availability.js';
+type LibraryChoice=LibraryRecord&{availability?:LibraryState};
 
 type Bridge = finch.WebviewBridgeApi;
 declare global { interface Window { finch: Bridge } }
-interface Document { issueKind?: 'pending' | 'unsupported' | 'failed' | 'empty_file' | 'no_text' | 'image_no_text' | 'unavailable'; size_bytes?: number | null; modified_at?: number | null; file_type?: string; id: string; name: string; path: string; tags: string[]; chunks: number; added_at: number; indexed_at: number; indexState?: 'indexed' | 'partial' | 'missing' | 'unavailable'; indexedChunks?: number | null; status?: DocumentState; statusReason?: string }
+interface Document { file_id?:string; source_revision?:number; issueKind?: 'pending' | 'unsupported' | 'failed' | 'empty_file' | 'no_text' | 'image_no_text' | 'unavailable'; size_bytes?: number | null; modified_at?: number | null; file_type?: string; id: string; name: string; path: string; tags: string[]; chunks: number; added_at: number; indexed_at: number; indexState?: 'indexed' | 'partial' | 'missing' | 'unavailable'; indexedChunks?: number | null; status?: DocumentState; statusReason?: string }
 interface Tag { id: string; name: string; count: number; color?: string }
 interface IndexedDirectory { path: string; parent: string | null; name: string; count: number }
 interface Match { document_id: string; name: string; path: string; tag_id: string; chunk: number; text: string; matched?: string[] }
-interface LibraryInfo { indexStorage?: 'source' | 'local'; indexRoot?: string; version?: number; name?: string; activeId?: string; libraries?: LibraryRecord[]; entered?: boolean; selected?: boolean; root: string; isDefault: boolean; documents: number; tags: number; unavailable: string | null }
+interface LibraryInfo { availabilityEpoch?:string;availabilityVersion?:number; indexStorage?: 'source' | 'local'; indexRoot?: string; version?: number; name?: string; activeId?: string; libraries?: LibraryChoice[]; entered?: boolean; selected?: boolean; root: string; isDefault: boolean; documents: number; tags: number; unavailable: string | null }
 interface EnvironmentStep { id: string; status: 'pending' | 'running' | 'ready' | 'failed'; optional?: boolean; lazy?: boolean; message?: string; percent?: number; detail?: string; error?: string }
 interface EnvironmentState { running: boolean; ready: boolean; usable: boolean; steps: EnvironmentStep[]; startedAt?: number; finishedAt?: number }
-interface Reply { paused?: boolean; scanning?: boolean; issuesTotal?: number; type: string; libraryVersion?: number; directories?: IndexedDirectory[]; percent?: number; root?: string; phase?: 'processing' | 'settled'; version?: number; document?: Document; requestId?: string; tags?: Tag[]; tag?: Tag; documents?: Document[]; total?: number; offset?: number; focusId?: string; matches?: Match[]; error?: string; message?: string; unchanged?: number; path?: string; count?: number; missing?: number; library?: LibraryInfo; mode?: string; previousRoot?: string; environment?: EnvironmentState; sessionId?: string; names?: string[]; change?: { kind?: string; documentId?: string; tags?: string[] }; sync?: { paused?: boolean; updated: string[]; removed: string[]; unchanged: number; unreachable: string[]; failed: Array<{ name: string; reason: string }>; skipped?: Array<{ name: string; reason: string }>; moved?: string[] } }
+interface Reply { id?:string;availabilityEpoch?:string;availabilityVersion?:number;states?:LibraryStateRow[];warning?:string; nextCursor?:string; previousCursor?:string; catalogVersion?:number; preferences?: { hideUnsupported: boolean }; paused?: boolean; scanning?: boolean; issuesTotal?: number; type: string; libraryVersion?: number; directories?: IndexedDirectory[]; percent?: number; root?: string; phase?: 'processing' | 'settled'; version?: number; document?: Document; requestId?: string; tags?: Tag[]; tag?: Tag; documents?: Document[]; total?: number; offset?: number; focusId?: string; matches?: Match[]; error?: string; message?: string; unchanged?: number; path?: string; count?: number; missing?: number; library?: LibraryInfo; mode?: string; previousRoot?: string; environment?: EnvironmentState; sessionId?: string; names?: string[]; change?: { kind?: string; documentId?: string; tags?: string[] }; sync?: { paused?: boolean; updated: string[]; removed: string[]; unchanged: number; unreachable: string[]; failed: Array<{ name: string; reason: string }>; skipped?: Array<{ name: string; reason: string }>; moved?: string[] } }
 type Copy = Record<string, string>;
 const english: Copy = {
   scanPause: 'Pause indexing', scanPauseHint: 'Pause after the current file. Existing indexes remain searchable.', scanPausing: 'Pausing…', scanPaused: 'Indexing paused; completed files remain searchable.',
@@ -31,18 +33,22 @@ const english: Copy = {
   emptyFolderTitle: 'No indexed documents in this folder', emptyFolderHint: 'Empty folders remain visible. Check Not indexed / issues for unsupported or unrecognized files.',
   filterByTag: 'Show sources tagged {tag}', scanIssuesClear: 'Clear notices',
   sortModified: 'Date modified', sortType: 'Type', sortSize: 'Size', columnStatus: 'Index status', fileGeneric: 'File',
-  'fileType.md': 'Markdown', 'fileType.txt': 'Text document', 'fileType.doc': 'Word document', 'fileType.docx': 'Word document', 'fileType.pdf': 'PDF document',
+  'fileType.md': 'Markdown', 'fileType.txt': 'Text document', 'fileType.doc': 'Word document', 'fileType.docx': 'Word document', 'fileType.xls': 'Excel workbook', 'fileType.xlsx': 'Excel workbook', 'fileType.ppt': 'PowerPoint presentation', 'fileType.pptx': 'PowerPoint presentation', 'fileType.pdf': 'PDF document',
   'fileType.png': 'PNG image', 'fileType.jpeg': 'JPEG image', 'fileType.webp': 'WebP image', 'fileType.bmp': 'Bitmap image', 'fileType.tiff': 'TIFF image',
   resizeSidebar: 'Drag to resize the sidebar. Double-click to reset; arrow keys also resize.',
   directoriesEmpty: 'Source folders appear here after scanning.', tagsEmpty: 'No tags yet. Use + to create one.',
   colorPlane: 'Saturation and brightness; arrow keys adjust each axis.', colorHue: 'Hue', colorValue: 'Saturation {s}%, brightness {v}%.',
   colorHint: 'Drag the color plane or hue strip, or enter a HEX value.', colorInvalid: 'Enter a color such as #5393d8.', colorReset: 'Default', colorCancel: 'Cancel', colorSave: 'Save',
   'tagColor.red': 'Red', 'tagColor.orange': 'Orange', 'tagColor.yellow': 'Yellow', 'tagColor.green': 'Green', 'tagColor.blue': 'Blue', 'tagColor.purple': 'Purple', 'tagColor.gray': 'Gray',
-  openDirectory: 'Open source folder', librarySettings: 'Library settings',
+  libraryNameLabel:'Knowledge base name',libraryNameHint:'Enter to save; Esc to cancel.',libraryNameInvalid:'Use a name of 1–60 characters.',librarySave:'Save name',libraryCancel:'Cancel rename',
+  'libraryState.unknown':'Unknown','libraryState.checking':'Checking','libraryState.available':'Available','libraryState.offline':'Offline','libraryState.unavailable':'Unavailable',
+  'libraryStateHint.unknown':'Not checked yet.','libraryStateHint.checking':'Checking the source folder in the background.','libraryStateHint.available':'The source folder is accessible; index readiness is separate.','libraryStateHint.offline':'The source folder or original share is disconnected or missing.','libraryStateHint.unavailable':'Access could not be verified. Check permissions, network or the share mapping.',
+  renameLibrary:'Rename {name}',removeLibrary:'Remove {name}',libraryRenamed:'Knowledge base renamed.',libraryRemoved:'Knowledge base removed. Source files are unchanged.',
+  openDirectory: 'Open source folder', directoryOpen: 'Open folder', preferences: 'Preferences', hideUnsupported: 'Hide unsupported files', librarySettings: 'Library settings',
   emptyTitle: 'No searchable documents yet',
   emptyHint: 'Place documents in the source folder, then use Scan and update at the top right. Originals stay untouched.',
   emptyDirectory: 'Source folder', emptyStepFiles: 'Add source files', emptyStepScan: 'Scan and update', emptyStepTags: 'Organize with tags',
-  emptyTypes: 'Markdown, text, Word, PDF and images',
+  emptyTypes: 'Markdown, text, Word, Excel, PowerPoint, PDF and images',
   emptyCategoryTitle: 'No documents in {tag} yet', emptyCategoryHint: 'Browse All sources and add this tag to documents. Tags never move files.',
   emptyScanningTitle: 'Checking your source folder', emptyScanningHint: 'Comparing file content and preparing indexes. Documents will appear here as the scan completes.',
   emptyLoadingTitle: 'Loading your documents', emptyLoadingHint: 'Reading the index. Your source files are unchanged.',
@@ -146,6 +152,9 @@ let sortControl: ReturnType<typeof createSortMenu> | undefined;
 let total = 0;
 let beforeOffset = 0;
 let nextOffset = 0;
+let nextCursor: string | undefined;
+let previousCursor: string | undefined;
+let catalogVersion = -1;
 let loadingPage = false;
 let pageEpoch = 0;
 let searchEpoch = 0;
@@ -162,7 +171,11 @@ let libraryName = '';
 let libraryIndexStorage: 'source' | 'local' = 'source';
 let libraryVersion = -1;
 let activeLibraryId = '';
-let libraryEntries: LibraryRecord[] = [];
+let libraryEntries: LibraryChoice[] = [];
+let availabilityEpoch='',availabilityVersion=-1;
+let availabilityTimer:ReturnType<typeof setInterval>|undefined;
+let editingLibrary:{id:string;value:string;saving:boolean;error?:string}|undefined;
+const libraryStatusFingerprint=(record:LibraryRecord)=>JSON.stringify([record.root,record.index??null]);
 let libraryDefault = false;
 let libraryUnavailable = '';
 let libraryBusy = false;
@@ -191,13 +204,14 @@ function tagName(id: string | null): string {
  * A file-type icon per format, from the JetBrains icon set (see icons/LICENSE.md), so a glance down
  * the list separates a note from a document from a picture. The `_auto` variants carry a light and a
  * dark drawing chosen by `prefers-color-scheme`, which follows the theme Finch hands its windows.
- * `.doc`/`.docx` have no icon of their own in that set, so they take the plain file — the same one
- * anything unsupported falls back to.
+ * Office icons are from vscode-icons; their MIT license ships beside the assets.
  */
 const FILE_ICONS: Array<{ extensions: string[]; icon: string }> = [
   { extensions: ['.md', '.markdown'], icon: 'markdown_auto.svg' },
   { extensions: ['.txt'], icon: 'text_auto.svg' },
-  { extensions: ['.doc', '.docx'], icon: 'file.svg' },
+  { extensions: ['.doc', '.docx'], icon: 'word.svg' },
+  { extensions: ['.xls', '.xlsx'], icon: 'excel.svg' },
+  { extensions: ['.ppt', '.pptx'], icon: 'powerpoint.svg' },
   { extensions: ['.pdf'], icon: 'pdf.svg' },
   { extensions: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff'], icon: 'image_auto.svg' },
 ];
@@ -275,6 +289,7 @@ function renderEnvironmentMenu(): void {
   const detail = byId('library-environment-detail');
   const step = environment?.running ? environment.steps.find((item) => item.status === 'running') : undefined;
   button.classList.toggle('spinning', Boolean(step));
+  button.querySelector('svg')?.replaceWith(svg(step?Loader:Cpu));
   if (!step) { detail.textContent = ''; button.removeAttribute('title'); return; }
   const name = STEP_SHORT[step.id]?.() ?? step.id;
   button.setAttribute('title', STEP_LABELS[step.id]?.() ?? step.id);
@@ -298,7 +313,7 @@ function icon(iconNode: IconNode, label: string): HTMLButtonElement {
   return button;
 }
 function mountStaticIcons(): void {
-  const staticIcons: Record<string, IconNode> = { search: Search, plus: Plus, x: X, archive: Archive, 'folder-input': FolderInput, 'folder-plus': FolderPlus, 'folder-open': FolderOpen, 'hard-drive': HardDrive, 'ellipsis-vertical': EllipsisVertical, 'refresh-cw': RefreshCw, 'triangle-alert': TriangleAlert, tag: TagIcon, trash: Trash2 };
+  const staticIcons: Record<string, IconNode> = {cpu:Cpu,'eye-off':EyeOff, search: Search, settings: Settings, check: Check, plus: Plus, x: X, archive: Archive, 'folder-input': FolderInput, 'folder-plus': FolderPlus, 'folder-open': FolderOpen, 'hard-drive': HardDrive, 'ellipsis-vertical': EllipsisVertical, 'refresh-cw': RefreshCw, 'triangle-alert': TriangleAlert, tag: TagIcon, trash: Trash2 };
   for (const placeholder of document.querySelectorAll<HTMLElement>('[data-icon]')) {
     const iconNode = staticIcons[placeholder.dataset.icon ?? ''];
     if (iconNode) placeholder.replaceWith(svg(iconNode));
@@ -317,7 +332,8 @@ function page(offset: number, mode: 'replace' | 'append' | 'prepend' = 'replace'
   loadingPage = true;
   byId('list-end').textContent = tr('loading');
   if (!docs.length) renderDocs();
-  request('page', { ...(showIssues ? { issues: true } : {}), tagId: selectedTag, directory: selectedDirectory, sort, descending: currentDescending(), offset }, mode);
+  const cursor=mode==='append'?nextCursor:mode==='prepend'?previousCursor:undefined;
+  request('page', { ...(showIssues ? { issues: true } : {}), ...(cursor?{cursor,before:mode==='prepend'}:{}), tagId: selectedTag, directory: selectedDirectory, sort, descending: currentDescending(), offset }, mode);
 }
 let refreshQueued = false;
 function visibleAnchor(): { path?: string; index: number; top: number } {
@@ -338,7 +354,7 @@ function resetPage(): void {
   refreshQueued = false;
   pageEpoch++;
   loadingPage = false;
-  docs = []; total = 0; beforeOffset = 0; nextOffset = 0;
+  docs = []; total = 0; beforeOffset = 0; nextOffset = 0;nextCursor=previousCursor=undefined;catalogVersion=-1;
   renderDocs();
   page(0);
 }
@@ -515,6 +531,12 @@ function applyIssueCount(count?: number): void {
   if (count === undefined || count === issuesTotal) return;
   issuesTotal = count; renderDirectories();
 }
+function directoryOpenButton(directory: string): HTMLButtonElement {
+  const button = icon(FolderOpen, tr('directoryOpen'));
+  button.classList.add('directory-open');
+  button.addEventListener('click', event => { event.stopPropagation(); if (!libraryBusy) request('libraryReveal', { directory }); });
+  return button;
+}
 function renderDirectories(): void {
   const container = byId('directories');
   const scroll = container.scrollTop;
@@ -526,7 +548,8 @@ function renderDirectories(): void {
   all.type = 'button'; all.classList.toggle('active', !showIssues && selectedTag === null && selectedDirectory === null);
   all.setAttribute('aria-pressed', String(!showIssues && selectedTag === null && selectedDirectory === null));
   all.append(svg(Files), node('span', 'tag-name', tr('all')), node('span', 'tag-count', String(directories.find(item => item.path === '')?.count ?? 0)));
-  all.addEventListener('click', () => selectTag(null)); container.append(all);
+  all.addEventListener('click', () => selectTag(null));
+  const allRow = node('div', 'directory-row has-directory-action'); allRow.append(all, directoryOpenButton('')); container.append(allRow);
   const issueChoice = node('button', 'directory-choice directory-issues') as HTMLButtonElement;
   issueChoice.type = 'button'; issueChoice.classList.toggle('active', showIssues); issueChoice.setAttribute('aria-pressed', String(showIssues));
   issueChoice.append(svg(CircleAlert), node('span', 'tag-name', tr('sourceIssues')), node('span', 'tag-count', String(issuesTotal)));
@@ -558,7 +581,8 @@ function renderDirectories(): void {
       choice.setAttribute('aria-pressed', String(!showIssues && selectedTag === null && selectedDirectory === entry.path));
       choice.append(svg(expanded ? FolderOpen : Folder), node('span', 'tag-name', entry.name), node('span', 'tag-count', String(entry.count)));
       choice.addEventListener('click', () => selectDirectory(entry.path));
-      row.append(toggle, choice); item.append(row);
+      row.classList.add('has-directory-action');
+      row.append(toggle, choice, directoryOpenButton(entry.path)); item.append(row);
       if (nested) { const sub = branch(entry.path); sub.id = childId; sub.hidden = !expanded; item.append(sub); }
       list.append(item);
     }
@@ -737,7 +761,7 @@ function renderColumnHeaders(): void {
     button.setAttribute('aria-pressed', String(sort === value));
     button.dataset.direction = sort === value ? currentDescending() ? 'descending' : 'ascending' : '';
   }
-  byId('column-status').textContent = tr('columnStatus');
+  byId('column-status-label').textContent = tr('columnStatus');
 }
 function wireColumns(): void {
   for (const value of ['name', 'modified', 'type', 'size'] as const) byId(`column-${value}`).addEventListener('click', () => {
@@ -766,7 +790,8 @@ function fileType(doc: Document): string {
  * manager, which is also where the first two land when the host cannot preview them.
  */
 function openDocument(doc: Document): void {
-  const reveal = () => request('reveal', { id: doc.id });
+  const root=libraryPath,version=libraryVersion;
+  const reveal = () => {if(root===libraryPath&&version===libraryVersion)request('reveal', { id: doc.id });};
   if (!openListedDocument(bridge, doc.name, doc.path, reveal)) reveal();
 }
 /** Non-indexed originals have no tag/preview actions; the reason stays in Index status. */
@@ -786,6 +811,8 @@ function buildIssueRow(doc: Document): HTMLElement {
   row.append(nameCell, node('span', 'doc-modified', fileModified(doc.modified_at)), node('span', 'doc-type', fileType(doc)), node('span', 'doc-size', fileSize(doc.size_bytes)), status);
   row.setAttribute('aria-label', `${doc.name} · ${reason}`); row.title = `${doc.path}\n${reason}`;
   const reveal = () => request('reveal', { id: doc.id, issues: true });
+  const tools = node('div', 'doc-tools');
+  const open = icon(FolderOpen, tr('directoryOpen')); open.addEventListener('click', reveal); tools.append(open); row.append(tools);
   row.addEventListener('dblclick', reveal);
   row.addEventListener('keydown', event => { if (event.target === row && event.key === 'Enter') { event.preventDefault(); reveal(); } });
   return row;
@@ -876,9 +903,8 @@ function buildRow(doc: Document): HTMLElement {
     event.preventDefault(); openDocument(doc);
   });
   const tools = node('div', 'doc-tools');
-  const previewable = previewRoute(doc.name) !== 'external';
-  const primary = previewable ? icon(Eye, tr('preview')) : icon(FolderOpen, tr('reveal'));
-  primary.addEventListener('click', () => openDocument(doc));
+  const primary = icon(FolderOpen, tr('reveal'));
+  primary.addEventListener('click', () => request('reveal', { id: doc.id }));
   const more = icon(EllipsisVertical, tr('menu'));
   more.setAttribute('aria-haspopup', 'menu');
   more.addEventListener('click', (event) => {
@@ -992,6 +1018,8 @@ function patchDocumentStatus(path: string, phase: 'processing' | 'settled', upda
   if (index < 0) return;
   const previous = docs[index]!;
   if (update && update.id !== previous.id) return;
+  if(update?.file_id&&previous.file_id&&update.file_id!==previous.file_id)return;
+  if(update?.source_revision!==undefined&&previous.source_revision!==undefined&&update.source_revision<previous.source_revision)return;
   docs[index] = phase === 'processing' ? { ...previous, status: 'processing', statusReason: undefined }
     : update ? { ...previous, ...update, tags: previous.tags } : { ...previous, status: 'unverified' };
   const row = byId('documents').querySelector<HTMLElement>(`.doc[data-id="${previous.id}"]`);
@@ -1255,10 +1283,7 @@ function wireTagContextMenu(): void {
 function wireRowMenu(): void {
   const menu = byId('row-menu') as HTMLElement;
   const submenu = byId('row-submenu') as HTMLElement;
-  byId('row-open').addEventListener('click', () => {
-    if (rowMenuDoc) request('reveal', { id: rowMenuDoc.id });
-    closeRowMenu();
-  });
+
   byId('row-classify').addEventListener('click', () => {
     if (menuOpenFor(submenu)) closeRowSubmenu(); else openRowSubmenu();
   });
@@ -1448,15 +1473,20 @@ function applyLibrary(info: LibraryInfo | undefined): boolean {
   libraryName = info.name ?? '';
   libraryIndexStorage = info.indexStorage ?? 'source';
   activeLibraryId = info.activeId ?? '';
-  libraryEntries = info.libraries ?? [];
+  const preserveStates=info.availabilityEpoch===availabilityEpoch&&(info.availabilityVersion??-1)<availabilityVersion;
+  const previousEntries=libraryEntries;
+  libraryEntries = (info.libraries ?? []).map(entry=>{const previous=previousEntries.find(v=>v.id===entry.id&&libraryStatusFingerprint(v)===libraryStatusFingerprint(entry));return preserveStates&&previous?{...entry,availability:previous.availability}:entry;});
+  if(info.availabilityEpoch!==undefined&&info.availabilityEpoch!==availabilityEpoch){availabilityEpoch=info.availabilityEpoch;availabilityVersion=-1;}
+  if(info.availabilityVersion!==undefined)availabilityVersion=Math.max(availabilityVersion,info.availabilityVersion);
   if (changed) {
+    editingLibrary=undefined;
     setMenu(false); setLibraryBusy(false);
     closeRowMenu(); closeTagColor(); closeSearch();
     pageEpoch++; loadingPage = false;
     creatingTag = false; inlineTagEditing = null; draggingTag = null;
     selectedTag = null; selectedDirectory = null; showIssues = false; issuesTotal = 0;
     directories = []; expandedDirectories.clear(); tags = []; docs = [];
-    total = 0; beforeOffset = 0; nextOffset = 0;
+    total = 0; beforeOffset = 0; nextOffset = 0;nextCursor=previousCursor=undefined;catalogVersion=-1;
     documentStatusVersions.clear();
     updateSortSizer(); renderDirectories(); renderTags(); renderDocs();
     setScanBusy(false);
@@ -1482,9 +1512,9 @@ function updateLibrary(): void {
   const path = byId('library-path');
   path.textContent = libraryName || (libraryUnavailable ? shortPath(libraryUnavailable) : short);
   // The row shows only the folder name, so the tooltip carries what it is and the full path.
-  const reveal = byId('library-reveal');
+  const reveal = byId('library-picker-button');
   reveal.setAttribute('title', `${libraryUnavailable ? '⚠ ' : ''}${tr('libraryLabel')}\n${libraryUnavailable || libraryPath}`);
-  reveal.setAttribute('aria-label', `${tr('libraryLabel')}: ${libraryUnavailable || libraryPath}, ${tr('libraryReveal')}`);
+  reveal.setAttribute('aria-label', `${tr('librariesTitle')}: ${libraryUnavailable || libraryPath}`);
   byId('library-footer').classList.toggle('warning', Boolean(libraryUnavailable));
   const note = byId('library-note');
   const libraryNote = tr(libraryIndexStorage === 'local' ? 'libraryNoteRemote' : 'libraryNote');
@@ -1495,44 +1525,108 @@ ${libraryNote}` : libraryDefault ? `${tr('libraryDefault')}
 ${libraryNote}` : libraryNote;
   renderLibraryChoices();
 }
+function paintLibraryState(target:HTMLElement,state:LibraryState):void{target.dataset.state=state;target.textContent=tr(`libraryState.${state}`);target.title=tr(`libraryStateHint.${state}`);target.setAttribute('aria-label',target.title);}
+function applyLibraryStates(data:Reply):void{
+  if(data.availabilityEpoch!==availabilityEpoch||(data.availabilityVersion??-1)<availabilityVersion)return;
+  availabilityVersion=data.availabilityVersion??availabilityVersion;
+  for(const update of data.states??[]){
+    const entry=libraryEntries.find(v=>v.id===update.id&&libraryStatusFingerprint(v)===update.fingerprint);if(!entry)continue;
+    if(!['unknown','checking','available','offline','unavailable'].includes(update.state))continue;
+    entry.availability=update.state;
+    const row=Array.from(byId('library-list').children).find(v=>(v as HTMLElement).dataset.libraryId===entry.id);
+    const target=row?.querySelector<HTMLElement>('.library-entry-state');if(target)paintLibraryState(target,update.state);
+    row?.querySelector('.library-choice')?.setAttribute('aria-label',`${entry.name} — ${tr(`libraryStateHint.${update.state}`)}`);
+  }
+}
+function beginLibraryEdit(entry:LibraryChoice):void{
+  if(editingLibrary?.saving)return;
+  editingLibrary={id:entry.id,value:entry.name,saving:false};renderLibraryChoices();
+  const input=byId('library-list').querySelector<HTMLInputElement>('.library-name-input');input?.focus();input?.select();
+}
+function endLibraryEdit():void{
+  const id=editingLibrary?.id;editingLibrary=undefined;renderLibraryChoices();
+  const row=Array.from(byId('library-list').children).find(v=>(v as HTMLElement).dataset.libraryId===id);
+  if(menuOpen('libraries')){row?.querySelector<HTMLButtonElement>('.library-choice')?.focus({preventScroll:true});row?.querySelector<HTMLButtonElement>('[data-action="libraryRename"]')?.focus({preventScroll:true});}
+}
+function saveLibraryEdit():void{
+  if(!editingLibrary||editingLibrary.saving)return;
+  const name=editingLibrary.value.trim();
+  if(!name||name.length>60){editingLibrary.error=tr('libraryNameInvalid');const input=byId('library-list').querySelector<HTMLInputElement>('.library-name-input');input?.setAttribute('aria-invalid','true');if(input)input.title=editingLibrary.error;input?.focus();return;}
+  editingLibrary.saving=true;request('libraryRename',{id:editingLibrary.id,name});
+  const input=byId('library-list').querySelector<HTMLInputElement>('.library-name-input');if(input)input.readOnly=true;
+}
 function renderLibraryChoices(): void {
   const container = byId('library-list');
   container.setAttribute('aria-label', tr('librariesTitle'));
+  const scroll=container.scrollTop;
   container.replaceChildren(...libraryEntries.map(entry => {
     const row = node('div', 'library-entry');
     row.dataset.libraryId = entry.id;
+    row.dataset.selected=String(entry.id===activeLibraryId);
+    if(editingLibrary?.id===entry.id){
+      row.classList.add('editing');
+      const main=node('div','library-edit-main');
+      const input=node('input','library-name-input') as HTMLInputElement;
+      input.type='text';input.maxLength=60;input.value=editingLibrary.value;input.readOnly=editingLibrary.saving;
+      input.setAttribute('aria-label',tr('libraryNameLabel'));input.setAttribute('aria-invalid',String(Boolean(editingLibrary.error)));input.title=editingLibrary.error??tr('libraryNameHint');
+      input.addEventListener('input',()=>{if(editingLibrary){editingLibrary.value=input.value;editingLibrary.error=undefined;input.setAttribute('aria-invalid','false');}});
+      input.addEventListener('keydown',event=>{if(event.isComposing)return;if(event.key==='Enter'){event.preventDefault();event.stopPropagation();saveLibraryEdit();}else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();if(!editingLibrary?.saving)endLibraryEdit();}});
+      main.append(input);row.append(main);return row;
+    }
     const current = entry.id === activeLibraryId;
     const choice = node('button', 'menu-item library-choice') as HTMLButtonElement;
     choice.type = 'button'; choice.disabled = libraryBusy;
     choice.setAttribute('role', 'menuitemradio'); choice.setAttribute('aria-checked', String(current));
+    choice.setAttribute('aria-label',`${entry.name} — ${tr(`libraryStateHint.${entry.availability??'unknown'}`)}`);
     choice.title = entry.root;
     const label = node('span', 'library-entry-label');
-    const detail = node('span', 'library-entry-root', entry.root); detail.dir = 'ltr';
-    label.append(node('span', 'library-entry-name', entry.name), detail);
-    const check = node('span', 'library-entry-check');
-    if (current) check.append(svg(Check));
-    choice.append(check, label);
+    label.append(node('span', 'library-entry-name', entry.name));
+    choice.append(label);
     choice.addEventListener('click', () => {
       if (libraryBusy) return;
       setMenu(false);
       if (current) return;
       setLibraryBusy(true); request('librarySwitch', { id: entry.id });
     });
-    row.append(choice);
+    const controls=node('span','library-entry-controls');
+    for(const [action,icon,key] of [['libraryRename',PenLine,'renameLibrary'],['libraryRemove',Trash2,'removeLibrary']] as const){
+      const button=node('button','plain-icon library-manage') as HTMLButtonElement;
+      button.type='button';button.disabled=libraryBusy;button.dataset.action=action;button.setAttribute('role','menuitem');
+      button.title=tr(key,{name:entry.name});button.setAttribute('aria-label',button.title);button.append(svg(icon));
+      button.addEventListener('click',event=>{event.stopPropagation();if(libraryBusy)return;if(action==='libraryRename'){beginLibraryEdit(entry);return;}setMenu(false);setLibraryBusy(true);request(action,{id:entry.id});});
+      controls.append(button);
+    }
+    const tail=node('span','library-entry-tail'),state=node('span','library-entry-state');paintLibraryState(state,entry.availability??'unknown');tail.append(state,controls);
+    row.append(choice,tail);
     return row;
   }));
+  container.scrollTop=scroll;
 }
-function setMenu(open: boolean): void {
-  const menu = byId('library-menu');
-  if (open) {
-    closeRowMenu();
-    // Escape the workspace clipping boundary, especially in short stacked sidebars.
-    document.body.append(menu); menu.classList.add('library-picker-floating');
-    placeMenu(menu, byId('library-menu-button').getBoundingClientRect());
-  } else menu.hidden = true;
-  byId('library-menu-button').setAttribute('aria-expanded', String(open));
+type LibraryMenuKind = 'libraries' | 'actions';
+let activeLibraryMenu: LibraryMenuKind = 'libraries';
+let libraryMenuAnchor:HTMLElement|undefined;
+function libraryMenuTrigger(): HTMLElement { return libraryMenuAnchor??byId(activeLibraryMenu === 'libraries' ? 'library-picker-button' : 'library-menu-button'); }
+function setMenu(open: boolean, kind: LibraryMenuKind = 'libraries',anchor?:HTMLElement): void {
+  for (const id of ['library-menu', 'library-actions-menu']) byId(id).hidden = true;
+  for (const id of ['library-picker-button', 'library-menu-button','onboard-library-action']) byId(id).setAttribute('aria-expanded', 'false');
+  if(availabilityTimer!==undefined){clearInterval(availabilityTimer);availabilityTimer=undefined;}
+  if (!open) {if(editingLibrary&&!editingLibrary.saving){editingLibrary=undefined;renderLibraryChoices();}return;}
+  activeLibraryMenu = kind;libraryMenuAnchor=anchor;
+  closeRowMenu();
+  const menu = byId(kind === 'libraries' ? 'library-menu' : 'library-actions-menu');
+  // Both menus escape the sidebar clipping boundary, but have independent triggers.
+  document.body.append(menu); menu.classList.add('library-picker-floating');
+  placeMenu(menu, libraryMenuTrigger().getBoundingClientRect());
+  libraryMenuTrigger().setAttribute('aria-expanded', 'true');
+  if(kind==='libraries'){
+    request('libraryAvailability');
+    availabilityTimer=setInterval(()=>{if(!document.hidden)request('libraryAvailability');},15000);
+  }
 }
-function menuOpen(): boolean { return !(byId('library-menu') as HTMLElement).hidden; }
+function menuOpen(kind?: LibraryMenuKind): boolean {
+  return kind ? !byId(kind === 'libraries' ? 'library-menu' : 'library-actions-menu').hidden
+    : ['library-menu', 'library-actions-menu'].some(id => !byId(id).hidden);
+}
 function setScanBusy(busy: boolean): void {
   if (!busy || !scanBusy) {
     scanPercent = null;
@@ -1544,11 +1638,20 @@ function setScanBusy(busy: boolean): void {
   const button = byId('sync') as HTMLButtonElement;
   if (!busy) pauseRequested = false;
   button.disabled = pauseRequested || libraryBusy || !libraryPath || Boolean(libraryUnavailable);
-  byId('sync-label').textContent = busy ? tr(pauseRequested ? 'scanPausing' : 'scanPause') : tr('syncLabel');
+  const label = busy ? tr(pauseRequested ? 'scanPausing' : 'scanPause') : tr('syncLabel');
+  byId('sync-label').textContent = label; byId('settings-scan-label').textContent = label;
+  button.setAttribute('aria-label', label);
+  (byId('settings-scan') as HTMLButtonElement).disabled = button.disabled;
   button.setAttribute('aria-busy', String(busy));
   button.setAttribute('title', busy ? tr('scanPauseHint') : tr('syncHint'));
   renderActivity();
   if (!docs.length) renderDocs();
+}
+/** Completion is a reconciliation boundary, not proof that a batch snapshot reached the page. */
+function finishScan(): void {
+  const wasBusy = scanBusy;
+  setScanBusy(false);
+  if (wasBusy) refreshPage();
 }
 function requestScan(): void {
   if (libraryBusy || pauseRequested || !libraryPath || libraryUnavailable) return;
@@ -1560,7 +1663,7 @@ function requestScan(): void {
 function setLibraryBusy(busy: boolean): void {
   libraryBusy = busy;
   renderLibraryChoices();
-  for (const id of ['library-location', 'library-reveal', 'library-menu-button', 'open-directory', 'onboard-library-action']) (byId(id) as HTMLButtonElement).disabled = busy;
+  for (const id of ['library-location', 'library-picker-button', 'library-menu-button', 'open-directory', 'onboard-library-action']) (byId(id) as HTMLButtonElement).disabled = busy;
   if (busy) setMenu(false);
   setScanBusy(scanBusy);
   renderActivity();
@@ -1575,7 +1678,7 @@ function applyCopy(): void {
     sortLabel: 'sort-label',
     libraryLocation: 'library-location-label', syncLabel: 'sync-label',
     libraryEnvironment: 'library-environment-label',
-    menuReveal: 'row-open-label', menuClassify: 'row-classify-label',
+    menuClassify: 'row-classify-label', hideUnsupported: 'hide-unsupported-label',
     onboardTitle: 'onboard-title', onboardIntro: 'onboard-intro', onboardRetry: 'onboard-retry', onboardHelp: 'onboard-help',
     onboardLibraryTitle: 'onboard-library-title', onboardLibraryAction: 'onboard-library-action-label',
     searchLabel: 'search-label',
@@ -1699,6 +1802,8 @@ if (bridge) {
       if (task?.type.startsWith('library')) setLibraryBusy(false);
       return;
     }
+    if (data.preferences) byId('hide-unsupported').setAttribute('aria-checked', String(data.preferences.hideUnsupported));
+    if(data.type==='libraryAvailability'){if(data.requestId)pending.delete(data.requestId);applyLibraryStates(data);return;}
     if (data.type === 'libraries') {
       if (applyLibrary(data.library)) { request('tags'); resetPage(); }
       return;
@@ -1725,7 +1830,7 @@ if (bridge) {
     }
     if (data.type === 'scanFailed') { setScanBusy(false); return; }
     if (data.type === 'scanDone') {
-      setScanBusy(false);
+      finishScan();
       // Manual scans also get a final reply; only that reply owns their completion toast.
       if ([...pending.values()].some(task => task.type === 'sync')) return;
       toast(tr(data.paused ? 'scanPaused' : 'syncFinished'), data.paused ? 'info' : 'success');
@@ -1761,8 +1866,10 @@ if (bridge) {
         if ((byId('search-dialog') as HTMLDialogElement).open) queueSearch();
         return;
       }
-      applyTags(data.tags ?? []);
-      resetPage();
+      // Same-library catalogue updates retain the visible snapshot until its replacement arrives.
+      applyTags(data.tags ?? [], false);
+      pageEpoch++; loadingPage = false; refreshQueued = false;
+      refreshPage();
       if ((byId('search-dialog') as HTMLDialogElement).open) queueSearch();
       return;
     }
@@ -1777,7 +1884,9 @@ if (bridge) {
       loadingPage = false;
       byId('list-end').textContent = '';
       if (task.type === 'sync') { setScanBusy(false); return; }
-      if (task.type.startsWith('library')) setLibraryBusy(false);
+      if(task.type==='libraryRename'&&editingLibrary&&editingLibrary.id===data.id){editingLibrary.saving=false;editingLibrary.error=data.error;}
+      if (task.type.startsWith('library')) {setLibraryBusy(false);if(data.library){const changed=applyLibrary(data.library);if(changed&&data.library.selected){request('tags');resetPage();}}}
+      if(task.type==='libraryRename'&&editingLibrary&&editingLibrary.id===data.id)byId('library-list').querySelector<HTMLInputElement>('.library-name-input')?.focus();
       toast(data.error ?? '', 'error'); return;
     }
     switch (data.type) {
@@ -1791,6 +1900,7 @@ if (bridge) {
         if (changed) resetPage();
         break;
       }
+      case 'preferences': break;
       case 'environmentHelpOpened':
         // The chat opens in front of this page, so the hand-off speaks for itself.
         break;
@@ -1798,9 +1908,9 @@ if (bridge) {
         applyLibrary(data.library);
         break;
       case 'syncDone': {
-        setScanBusy(false);
+        finishScan();
         toast(tr(data.sync?.paused ? 'scanPaused' : 'syncFinished'), data.sync?.paused ? 'info' : 'success');
-        // The final scanBatch already refreshed the visible window without clearing it.
+        // Also reconciles hosts where only the manual reply reaches the page.
         break;
       }
       case 'libraryEntered':
@@ -1808,6 +1918,10 @@ if (bridge) {
         applyEnvironment(data.environment);
         request('tags'); resetPage();
         break;
+      case 'libraryRenamed':
+        applyLibrary(data.library);if(editingLibrary?.id===data.id)endLibraryEdit();break;
+      case 'libraryRemoved':
+        setLibraryBusy(false);applyLibrary(data.library);toast(data.warning??tr('libraryRemoved'),data.warning?'warning':'success');break;
       case 'libraryRevealed':
         setLibraryBusy(false); break;
       case 'libraryCanceled':
@@ -1830,6 +1944,8 @@ if (bridge) {
         if (data.tag) { showIssues = false; updateSortSizer(); selectedDirectory = null; selectedTag = data.tag.id; tags.push(data.tag); renderDirectories(); renderTags(); resetPage(); }
         break;
       case 'page': {
+        if(data.catalogVersion!==undefined&&data.catalogVersion<catalogVersion){loadingPage=false;refreshPage();break;}
+        if(data.catalogVersion!==undefined)catalogVersion=data.catalogVersion;
         const container = byId('documents-scroll');
         const oldHeight = container.scrollHeight;
         const offset = data.offset ?? 0;
@@ -1838,6 +1954,8 @@ if (bridge) {
         if (mode === 'replace' || mode === 'locate' || mode === 'refresh') { docs = data.documents ?? []; beforeOffset = offset; nextOffset = offset + docs.length; if (mode !== 'refresh') container.scrollTop = 0; }
         else if (mode === 'prepend') { docs = [...(data.documents ?? []), ...docs]; beforeOffset = offset; }
         else { docs = [...docs, ...(data.documents ?? [])]; nextOffset = offset + (data.documents?.length ?? 0); }
+        if(mode==='replace'||mode==='locate'||mode==='refresh'||mode==='append')nextCursor=data.nextCursor;
+        if(mode==='replace'||mode==='locate'||mode==='refresh'||mode==='prepend')previousCursor=data.previousCursor;
         total = data.total ?? 0; loadingPage = false;
         renderDocs(data.focusId, mode === 'refresh');
         if (mode === 'refresh') {
@@ -1869,8 +1987,10 @@ if (bridge) {
   // Adding registers the chosen directory and opens its own index in place.
   // Existing libraries remain registered; no files or index data are copied.
   for (const id of ['onboard-library-action', 'library-location']) {
-    byId(id).addEventListener('click', () => {
+    byId(id).addEventListener('click', (event) => {
       if (libraryBusy) return;
+      event.stopPropagation();
+      if(id==='onboard-library-action'&&!libraryPath&&libraryEntries.length){setMenu(!menuOpen('libraries'),'libraries',byId(id));return;}
       setMenu(false);
       setLibraryBusy(true);
       request('libraryAction', { mode: 'choose' });
@@ -1884,23 +2004,22 @@ if (bridge) {
     renderEnvironmentMenu();
     request('environmentInstall');
   });
-  // The library lives behind one compact footer button plus an overflow menu.
-  byId('library-menu-button').addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (libraryBusy) return;
-    setMenu(!menuOpen());
-  });
+  for (const [id, kind] of [['library-picker-button', 'libraries'], ['library-menu-button', 'actions']] as const) {
+    byId(id).addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!libraryBusy) setMenu(!menuOpen(kind), kind);
+    });
+  }
   document.addEventListener('click', (event) => {
     if (!menuOpen()) return;
     const target = event.target as Node | null;
-    if (target && byId('library-menu').contains(target)) return;
-    if (target && byId('library-menu-button').contains(target)) return;
+    if (target && ['library-menu', 'library-actions-menu', 'library-picker-button', 'library-menu-button','onboard-library-action'].some(id => byId(id).contains(target))) return;
     setMenu(false);
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && menuOpen()) { event.preventDefault(); setMenu(false); byId('library-menu-button').focus(); }
+    if (event.key === 'Escape' && menuOpen()) { event.preventDefault(); setMenu(false); libraryMenuTrigger().focus(); }
   });
-  for (const id of ['library-reveal', 'open-directory']) byId(id).addEventListener('click', () => {
+  byId('open-directory').addEventListener('click', () => {
     if (libraryBusy) return;
     setMenu(false);
     setLibraryBusy(true);
@@ -1908,6 +2027,8 @@ if (bridge) {
   });
   window.addEventListener('resize', () => setMenu(false));
   byId('sync').addEventListener('click', requestScan);
+  byId('settings-scan').addEventListener('click', requestScan);
+  byId('hide-unsupported').addEventListener('click', () => request('preferences', { hideUnsupported: byId('hide-unsupported').getAttribute('aria-checked') !== 'true' }));
   const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files');
   document.addEventListener('dragenter', (event) => { if (isFileDrag(event)) { event.preventDefault(); document.body.classList.add('dragging-file'); } });
   document.addEventListener('dragover', (event) => { if (isFileDrag(event)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; } });
