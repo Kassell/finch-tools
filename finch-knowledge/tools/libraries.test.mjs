@@ -97,3 +97,20 @@ test('source operations are scoped while library management and environment acti
   for (const action of ['page', 'locate', 'tags', 'tagCreate', 'tagRename', 'tagDelete', 'tagToggle', 'tagColor', 'tagReorder', 'search', 'reveal', 'sync', 'enterLibrary', 'libraryReveal']) assert.equal(isLibraryScoped(action), true, action);
   for (const action of ['ready', 'library', 'librarySwitch', 'libraryAction', 'libraryRename', 'libraryRemove', 'environment', 'environmentInstall']) assert.equal(isLibraryScoped(action), false, action);
 });
+
+
+test('rename and remove persist independently of source availability and removed selections never resurrect',async t=>{
+  const f=await fixture(t);await f.registry.load(join(f.root,'offline'));const entry=f.registry.list()[0];
+  await f.registry.rename(entry.id,'  Reading room  ');assert.equal(f.registry.find(entry.id).name,'Reading room');
+  await assert.rejects(f.registry.rename(entry.id,'   '),/1–60/);
+  assert.equal((await f.reload(entry.root)).find(entry.id).name,'Reading room');
+  await f.registry.remove(entry.id);assert.deepEqual((await f.reload(entry.root)).list(),[],'legacy selection must not re-add an explicitly removed library');
+  assert.deepEqual(await readdir(f.root),[],'metadata operations never create, rename or delete source directories');
+});
+
+test('rename/remove failures are atomic and concurrent changes keep their ownership',async t=>{
+  const f=await fixture(t);await f.registry.load(f.root);const a=f.registry.list()[0];const b=await f.registry.add(join(f.root,'b'));
+  f.fail(true);await assert.rejects(f.registry.remove(a.id),/storage failure/);assert.equal(f.registry.find(a.id).name,a.name);
+  await assert.rejects(f.registry.rename(a.id,'Changed'),/storage failure/);assert.equal(f.registry.find(a.id).name,a.name);
+  f.fail(false);await Promise.all([f.registry.rename(a.id,'A'),f.registry.remove(b.id)]);assert.deepEqual(f.registry.list().map(v=>v.name),['A']);
+});

@@ -1,18 +1,25 @@
 import type * as finch from 'finch';
 import { execFile } from 'node:child_process';
+import {randomUUID} from 'node:crypto';
+import {LibraryAvailability} from './library-availability.js';
+export {LibraryAvailability,probeLibrary,libraryFingerprint} from './library-availability.js';
 import { stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
-import { DEFAULT_TAG, KnowledgeStore, MAX_FILE_MB, SIZE_LIMIT_MESSAGE, engineForExtension, type DocumentSort } from './store.js';
+import { DEFAULT_TAG, KnowledgeStore, MAX_FILE_MB, SIZE_LIMIT_MESSAGE, engineForExtension, type DocumentSummary, type DocumentStatus, type DocumentSort } from './store.js';
 import { expandImportTargets, MAX_BATCH_FILES, type ImportedFile, type ImportFailure, type ImportRequest, type SkipReason } from './tool-import.js';
 import { loadEngine as loadDocumentEngine, ENGINE_VERSION as DOCUMENT_ENGINE_VERSION, isEngineInstalled as isDocumentEngineInstalled } from './document-engine.js';
 import { loadEngine as loadOcrEngine, ENGINE_VERSION as OCR_ENGINE_VERSION, isEngineInstalled as isOcrEngineInstalled, engineBinaryPath } from './ocr-engine.js';
 import { listModels as listOcrModels } from './ocr-runner.js';
 import { loadLanceDB, isEngineInstalled as isLanceEngineInstalled, engineVersion as lanceEngineVersion } from './lancedb-engine.js';
 import { LibraryGate } from './library-gate.js';
+import { interruptible } from './work-scope.js';
+import { directoryKey } from './directories.js';
 import { ScanUpdates } from './scan-updates.js';
 export { ScanUpdates } from './scan-updates.js';
-import { LibraryRegistry, LIBRARIES_STORAGE_KEY } from './libraries.js';
+import { LibraryRegistry, LIBRARIES_STORAGE_KEY, type LibraryIndex } from './libraries.js';
+import {libraryIndexPath,stageIndexRemoval,type StagedIndexRemoval} from './index-removal.js';
+export {libraryIndexPath,stageIndexRemoval,trashIndex} from './index-removal.js';
 import { isLibraryScoped } from './library-scope.js';
 import { AutoScanCooldown } from './scan-cooldown.js';
 import { EnvironmentManager, type EnvironmentSnapshot } from './environment.js';
@@ -39,7 +46,7 @@ export { downloadWithProgress, formatBytes, oncePerPercent } from './download.js
 
 const execFileAsync = promisify(execFile);
 export const KNOWLEDGE_ACTIONS = ['search', 'tags', 'documents', 'library', 'environment', 'index', 'sync', 'create_tag', 'rename_tag', 'delete_tag', 'tag_document', 'untag_document'] as const;
-interface ViewRequest { refresh?: boolean; anchorPath?: string; anchorIndex?: number; limit?: number; issues?: boolean; type?: string; libraryRoot?: string; libraryVersion?: number; directory?: string; color?: string; requestId?: string; id?: string; ids?: string[]; key?: string; tagId?: string | null; name?: string; size?: number; data?: string; query?: string; offset?: number; sort?: string; descending?: boolean; mode?: string }
+interface ViewRequest { cursor?:string; before?:boolean; hideUnsupported?: boolean; refresh?: boolean; anchorPath?: string; anchorIndex?: number; limit?: number; issues?: boolean; type?: string; libraryRoot?: string; libraryVersion?: number; directory?: string; color?: string; requestId?: string; id?: string; ids?: string[]; key?: string; tagId?: string | null; name?: string; size?: number; data?: string; query?: string; offset?: number; sort?: string; descending?: boolean; mode?: string }
 function result(text: string, isError = false): finch.ToolResult {
   return { content: [{ type: 'text', text }], isError };
 }
@@ -101,24 +108,51 @@ export function activate(ctx: finch.MiniToolContext): void {
     set store(store: KnowledgeStore) { activeStore = store; },
   };
   let disposed = false;
+  const availabilityEpoch=randomUUID();let availabilityVersion=0;
+  const availability=new LibraryAvailability(states=>{
+    if(disposed)return;availabilityVersion++;
+    for(const panel of panels)void panel.postMessage({type:'libraryAvailability',availabilityEpoch,availabilityVersion,states}).catch(()=>{});
+  });
   let scanController: AbortController | undefined;
   let scanning: Promise<SyncOutcome> | undefined;
   let statusSequence = 0;
   const statusTasks = new Set<Promise<void>>();
-  ctx.subscriptions.push({ async dispose() { disposed = true; scanController?.abort(); await ready; await scanning?.catch(() => {}); await Promise.allSettled([...statusTasks]); await activeStore?.close(); } });
+  const pageChecks = new Map<finch.AppPanel, AbortController>();
+  const statusVersions = new WeakMap<KnowledgeStore, Map<string, number>>();
+  const retiringStores = new Set<Promise<void>>();
+  const retiringIndexes=new Map<string,Set<Promise<void>>>();
+  const retirementFailures=new Set<string>();
+  const indexKey=(path:string)=>process.platform==='win32'?path.toLowerCase():path;
+  function retire(store:KnowledgeStore|undefined,scan:Promise<SyncOutcome>|undefined,statuses:Promise<void>[]):Promise<void>{
+    if(!store)return Promise.resolve();
+    const key=indexKey(store.root);
+    const raw=(async()=>{await scan?.catch(()=>{});await Promise.allSettled(statuses);await store.close();})();
+    let tasks=retiringIndexes.get(key);if(!tasks){tasks=new Set();retiringIndexes.set(key,tasks);}tasks.add(raw);
+    const settled=raw.catch(error=>{retirementFailures.add(key);ctx.logger?.warn?.(`Library cleanup failed: ${errorText(error)}`);}).finally(()=>{retiringStores.delete(settled);tasks!.delete(raw);if(!tasks!.size)retiringIndexes.delete(key);});
+    retiringStores.add(settled);return raw;
+  }
+  ctx.subscriptions.push({ async dispose() { disposed = true; availability.dispose();scanController?.abort(); for (const controller of pageChecks.values()) controller.abort(); activeStore?.interrupt(); await ready; await scanning?.catch(() => {}); await Promise.allSettled([...statusTasks, ...retiringStores]); await activeStore?.close(); } });
   let unavailable: string | null = null;
   let setupComplete = false;
+  let hideUnsupported = false;
   const pausedLibraries = new Set<string>();
 
   async function swapTo(root: string, commit?: (root: string) => Promise<void>): Promise<void> {
-    scanController?.abort();
-    await scanning?.catch(() => {});
+    for (const controller of pageChecks.values()) controller.abort();
+    pageChecks.clear();
+    const previous = activeStore;
+    const previousScan = scanning;
+    const previousStatuses = [...statusTasks];
+    scanController?.abort(); previous?.interrupt();
+    scanController = undefined; scanning = undefined;
     const versions = new Map<string, number>();
     const selectionVersion = libraryVersion + 1;
-    const next: KnowledgeStore = await openSourceDirectory(root, ctx.storagePath, { progress: forwardProgress, requireEngine,
+    let next: KnowledgeStore;
+    try {
+    next = await openSourceDirectory(root, ctx.storagePath, { progress: forwardProgress, requireEngine,
       onVisibilityWarning: () => forwardProgress(t('library.hideFailed')),
       onStatusChange(path, phase) {
-        if (disposed || activeStore !== next) return;
+        if (disposed || activeStore !== next || next.interrupted) return;
         const version = ++statusSequence;
         versions.set(path, version);
         const publish = (document?: unknown) => {
@@ -133,27 +167,34 @@ export function activate(ctx: finch.MiniToolContext): void {
         }
       },
     });
+    statusVersions.set(next, versions);
     // Persist the selection before exposing a new store. A failed save keeps the old library usable.
-    try { await commit?.(next.directoryRoot!); }
+    try {
+      const info=await stat(next.directoryRoot,{bigint:true});
+      const index:LibraryIndex=next.indexStorage==='local'?{kind:'local',key:basename(next.root)}:{kind:'source',dev:String(info.dev),ino:String(info.ino)};
+      await libraries.add(next.directoryRoot,index);
+      await commit?.(next.directoryRoot!);
+    }
     catch (error) { await next.close(); throw error; }
-    const previous = activeStore;
+    } catch (error) { previous?.resume(); throw error; }
     libraryVersion++;
     state.root = next.directoryRoot!;
     state.store = next;
-    await Promise.allSettled([...statusTasks]);
-    await previous?.close();
+    // Retire A behind B's acknowledgement. Native read calls may not support hard cancellation.
+    void retire(previous,previousScan,previousStatuses).catch(()=>{});
   }
 
   const ready = (async () => {
     setupComplete = await ctx.storage.get<boolean>('setupComplete') === true;
+    hideUnsupported = await ctx.storage.get<boolean>('hideUnsupported') === true;
     const paused = await ctx.storage.get<unknown>('pausedLibraries');
     if (Array.isArray(paused)) for (const root of paused) if (typeof root === 'string') pausedLibraries.add(root);
     const saved = await ctx.storage.get<string>('sourceDirectory');
-    // A missing directory (unmounted drive) keeps the pointer so it resumes once the volume is back.
-    if (saved && saved !== state.root) {
+    await libraries.load(saved);
+    // An authoritative registry prevents a removed selection from opening/recreating an index.
+    if (saved && libraries.forRoot(saved) && saved !== state.root) {
       try { await swapTo(saved); } catch { unavailable = saved; }
     }
-    await libraries.load(state.root || saved);
   })();
 
   /**
@@ -166,6 +207,11 @@ export function activate(ctx: finch.MiniToolContext): void {
   async function autoScan(): Promise<SyncOutcome | undefined> {
     const store = activeStore;
     if (!store || !setupComplete || disposed || pausedLibraries.has(store.directoryRoot)) return;
+    try { await store.assertSourceAvailable(); }
+    catch { if (activeStore === store) { unavailable = store.directoryRoot; await broadcastLibraries(); } return; }
+    if (activeStore !== store) return;
+    unavailable = null;
+    if (store.rebuiltIndex) return syncSources();
     return scanCooldown.run(store.directoryRoot, async () => {
       if (disposed || activeStore !== store) return undefined;
       return syncSources();
@@ -182,25 +228,29 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (signal?.aborted) controller.abort();
     for (const panel of panels) void panel.postMessage({ type: 'scanStarted', root: store.directoryRoot, libraryVersion: scopeVersion }).catch(() => {});
     const updates = new ScanUpdates(async () => {
-      if (!disposed && activeStore === store && libraryVersion === scopeVersion) await broadcast({ kind: 'scanBatch' });
-    });
-    scanning = gate.write(async () => {
+      if (!disposed && !controller.signal.aborted && activeStore === store && libraryVersion === scopeVersion) await broadcast({ kind: 'scanBatch' });
+    },200);
+    // The scan owns this captured store; it must not hold the global switching gate.
+    const task: Promise<SyncOutcome> = (async () => {
       if (pausedLibraries.delete(store.directoryRoot)) await ctx.storage.set('pausedLibraries', [...pausedLibraries]);
       await scanCooldown.record(store.directoryRoot);
       return scanSourceDirectory(store, (name, percent) => {
+        if (controller.signal.aborted || activeStore !== store || libraryVersion !== scopeVersion) return;
         const message = t('progress.sync', { name });
         report?.(message, percent);
         for (const panel of panels) void panel.postMessage({ type: 'scanProgress', root: store.directoryRoot, libraryVersion: scopeVersion, message, percent }).catch(() => {});
       }, controller.signal, {
         onCheckpoint: state => { if (!state.completed || state.changed) updates.mark(); },
+        onCatalogBatch: () => { if(!controller.signal.aborted&&activeStore===store&&libraryVersion===scopeVersion)updates.mark(); },
         onDiscover(count) {
+          if (controller.signal.aborted || activeStore !== store || libraryVersion !== scopeVersion) return;
           const message = t('progress.discover', { count });
           for (const panel of panels) void panel.postMessage({ type: 'scanProgress', root: store.directoryRoot, libraryVersion: scopeVersion, message }).catch(() => {});
         },
       });
-    }).then(async outcome => {
+    })().then(async outcome => {
       outcome.paused = controller.signal.aborted;
-      if (!controller.signal.aborted) await scanCooldown.record(store.directoryRoot);
+      if (!controller.signal.aborted) { store.rebuiltIndex = false; await scanCooldown.record(store.directoryRoot); }
       updates.mark();
       await updates.flush();
       for (const panel of panels) void panel.postMessage({ type: 'scanDone', root: store.directoryRoot, libraryVersion: scopeVersion, sync: outcome, paused: outcome.paused }).catch(() => {});
@@ -209,8 +259,9 @@ export function activate(ctx: finch.MiniToolContext): void {
       updates.mark(); await updates.flush();
       for (const panel of panels) void panel.postMessage({ type: 'scanFailed', root: store.directoryRoot, libraryVersion: scopeVersion, error: errorText(error) }).catch(() => {});
       throw error;
-    }).finally(() => { scanning = undefined; signal?.removeEventListener('abort', abort); });
-    return scanning;
+    }).finally(() => { if (scanning === task) scanning = undefined; signal?.removeEventListener('abort', abort); });
+    scanning = task;
+    return task;
   }
 
   /**
@@ -263,7 +314,7 @@ export function activate(ctx: finch.MiniToolContext): void {
   }
 
   const composerAction = ctx.composerActions.register('knowledge', createKnowledgeComposer({
-    snapshot: async () => { await ready; return unavailable || !activeStore ? null : state.store.summary(); },
+    snapshot: async () => { await ready; return unavailable || !activeStore ? null : state.store.summary(true); },
     locale: async () => (await ctx.app?.getInfo())?.locale,
     t,
     showGuide: async () => {
@@ -313,10 +364,12 @@ export function activate(ctx: finch.MiniToolContext): void {
   async function libraryInfo(): Promise<Record<string, unknown>> {
     // summary() reads the catalogue only, so the first paint never waits on an engine download.
     const store = activeStore, root = state.root, version = libraryVersion;
-    const { tags } = store ? await store.summary() : { tags: [] };
-    const documents = store ? await store.fileCount() : 0;
+    const { tags } = store ? await store.summary(true) : { tags: [] };
+    const documents = store ? await store.fileCount(hideUnsupported, true) : 0;
     const current = libraries.forRoot(root);
-    return { root, version, indexStorage: store?.indexStorage, indexRoot: store?.root, name: current?.name, activeId: current?.id, libraries: libraries.list(), selected: Boolean(store), entered: setupComplete, isDefault: false, documents, tags: tags.length, unavailable };
+    const records=libraries.list();availability.refresh(records);
+    const choices=records.map(record=>({...record,availability:availability.state(record)}));
+    return { availabilityEpoch,availabilityVersion, root, version, indexStorage: store?.indexStorage, indexRoot: store?.root, name: current?.name, activeId: current?.id, libraries: choices, selected: Boolean(store), entered: setupComplete, isDefault: false, documents, tags: tags.length, unavailable };
   }
 
   const errorText = (error: unknown): string => {
@@ -325,7 +378,13 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (message === 'Tag no longer exists.') return t('error.missingTag');
     if (message === 'Tag name must be 1–60 characters.') return t('error.tagName');
     if (message === 'Document no longer exists.') return t('error.missingDocument');
-    if (message === 'Indexed file is no longer on disk.' || message.includes('ENOENT')) return t('error.missingFile');
+    if (message === 'SOURCE_MISSING' || message === 'Indexed file is no longer on disk.') return t('error.missingFile');
+    if (message === 'SOURCE_UNAVAILABLE') return t('error.sourceUnavailable');
+    if (message === 'Library name must be 1–60 characters.') return t('library.nameInvalid');
+    if (message === 'INDEX_REMOVAL_UNSAFE') return t('library.indexRemovalUnsafe');
+    if (message === 'INDEX_REMOVAL_SHARED') return t('library.indexRemovalShared');
+    if (message === 'INDEX_RETIREMENT_FAILED') return t('library.indexRetirementFailed');
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return t('error.pathUnavailable');
     if (message === 'Specify a local file path.') return t('tool.fileRequired');
     if (message === 'The file must be inside the current workspace.') return t('tool.fileOutside');
     if (message === 'Choose a regular file, not a symbolic link.') return t('tool.fileSymlink');
@@ -344,7 +403,7 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (message === 'The library folder is no longer on disk.') return t('library.unavailable');
     return message;
   };
-  const supported = new Set(['enterLibrary', 'ready', 'page', 'locate', 'tags', 'tagCreate', 'tagRename', 'tagColor', 'tagDelete', 'tagToggle', 'tagReorder', 'search', 'reveal', 'sync', 'scanPause', 'library', 'libraryAction', 'librarySwitch', 'libraryReveal', 'environment', 'environmentInstall', 'environmentHelp']);
+  const supported = new Set(['enterLibrary', 'ready', 'page', 'locate', 'tags', 'tagCreate', 'tagRename', 'tagColor', 'tagDelete', 'tagToggle', 'tagReorder', 'search', 'reveal', 'sync', 'scanPause', 'library', 'libraryAction', 'librarySwitch', 'libraryRename', 'libraryRemove', 'libraryAvailability', 'libraryReveal', 'preferences', 'environment', 'environmentInstall', 'environmentHelp']);
   const retired = new Set(['addFiles', 'uploadStart', 'uploadChunk', 'uploadFinish', 'uploadAbort', 'uploadCancel', 'delete', 'backup']);
 
   /**
@@ -354,23 +413,66 @@ export function activate(ctx: finch.MiniToolContext): void {
   async function broadcast(change?: { kind: 'tagToggle' | 'tagColor' | 'scanBatch'; documentId?: string; tags?: string[] }): Promise<void> {
     composerAction.notifyUpdate();
     const store = state.store, root = state.root, version = libraryVersion;
-    const tags = await store.tags();
-    const directories = await store.directories();
-    const issuesTotal = await store.issueCount();
+    const {tags,directories,issuesTotal,catalogVersion}=store.catalogOverview(hideUnsupported);
     if (store !== activeStore) return;
-    for (const panel of panels) void panel.postMessage({ type: 'changed', root, libraryVersion: version, tags, directories, issuesTotal, ...(change ? { change } : {}) }).catch(() => {});
+    for (const panel of panels) void panel.postMessage({ type: 'changed', root, libraryVersion: version, catalogVersion, tags, directories, issuesTotal, preferences: { hideUnsupported }, ...(change ? { change } : {}) }).catch(() => {});
   }
   async function broadcastLibraries(except?: finch.AppPanel): Promise<void> {
     composerAction.notifyUpdate();
     const library = await libraryInfo();
     await Promise.allSettled([...panels].filter(panel => panel !== except).map(panel => panel.postMessage({ type: 'libraries', library })));
   }
-  async function indexedPage(tagId: string | null, sort: DocumentSort, offset: number, directory: string | null = null, descending?: boolean) {
-    const store = state.store;
-    const page = await store.browsePage(tagId, sort, offset, 50, directory, descending);
-    const indexed = await store.indexStatus(page.documents.filter(doc => !('issueKind' in doc)));
-    const statuses = new Map(indexed.map(doc => [doc.id, doc]));
-    return { ...page, documents: page.documents.map(doc => statuses.get(doc.id) ?? doc) };
+  async function indexedPage(tagId: string | null, sort: DocumentSort, offset: number, directory: string | null = null, descending?: boolean, cursor?:string, before=false) {
+    return state.store.browsePage(tagId, sort, offset, 50, directory, descending, hideUnsupported, true,cursor,before);
+  }
+  /** The reply owns only SQL data; expensive verification is cancellable, page-scoped work. */
+  function verifyPage(panel: finch.AppPanel, store: KnowledgeStore, documents: DocumentSummary[], scopeVersion: number): void {
+    pageChecks.get(panel)?.abort();
+    const controller = new AbortController(); pageChecks.set(panel, controller);
+    const versions = statusVersions.get(store)!;
+    const candidates = documents.filter(doc => !('issueKind' in doc));
+    if (!documents.length) { pageChecks.delete(panel); return; }
+    const task = Promise.resolve().then(async () => {
+      const available = await interruptible(store.assertSourceAvailable(), controller.signal).then(() => true, () => false);
+      if (controller.signal.aborted || disposed || activeStore !== store || libraryVersion !== scopeVersion) return;
+      if (!available && unavailable !== store.directoryRoot) { unavailable = store.directoryRoot; await broadcastLibraries(); }
+      const issues = documents.filter(doc => 'issueKind' in doc);
+      if (available) for (let offset = 0; offset < issues.length; offset += 4) {
+        if (controller.signal.aborted || disposed || activeStore !== store || libraryVersion !== scopeVersion) return;
+        const batch = issues.slice(offset, offset + 4);
+        const requested = new Map(batch.map(doc => { const version = ++statusSequence; versions.set(doc.path, version); return [doc.path, version] as const; }));
+        const metadata = await store.refreshMetadata(batch, controller.signal);
+        if (controller.signal.aborted || disposed || activeStore !== store || libraryVersion !== scopeVersion) return;
+        for (const document of metadata) {
+          const current = await store.sourceIssue(document.id, true), original = batch.find(doc => doc.id === document.id)!;
+          const version = requested.get(document.path)!;
+          if (!current || current.issueKind !== (original as {issueKind: string}).issueKind || versions.get(document.path) !== version) continue;
+          const update = { ...current, size_bytes: document.size_bytes, modified_at: document.modified_at, file_type: document.file_type };
+          await Promise.allSettled([...panels].map(target => target.postMessage({ type: 'documentStatus', root: store.directoryRoot,
+            libraryVersion: scopeVersion, path: document.path, phase: 'settled', version, document: update })));
+        }
+      }
+      for (let offset = 0; offset < candidates.length; offset += 4) {
+        if (controller.signal.aborted || disposed || activeStore !== store || libraryVersion !== scopeVersion) return;
+        const batch: DocumentSummary[] = [];
+        for (const doc of candidates.slice(offset, offset + 4)) {
+          const current = await store.document(doc.id, true);
+          if (current?.hash === doc.hash && current.path === doc.path) batch.push(doc);
+        }
+        const requested = new Map(batch.map(doc => { const version = ++statusSequence; versions.set(doc.path, version); return [doc.path, version] as const; }));
+        const statuses: DocumentStatus[] = available ? await store.indexStatus(batch, controller.signal)
+          : batch.map(doc => ({ ...doc, indexState: 'unavailable', indexedChunks: null, sourceState: 'unavailable', status: 'source_unavailable' }));
+        if (controller.signal.aborted || disposed || activeStore !== store || libraryVersion !== scopeVersion) return;
+        for (const document of statuses) {
+          const version = requested.get(document.path)!;
+          const current=await store.document(document.id,true);
+          if (versions.get(document.path) !== version || current?.hash !== document.hash || (document.source_revision!==undefined&&current.source_revision!==document.source_revision)) continue;
+          await Promise.allSettled([...panels].map(target => target.postMessage({ type: 'documentStatus', root: store.directoryRoot, libraryVersion: scopeVersion,
+            path: document.path, phase: 'settled', version, document })));
+        }
+      }
+    }).catch(() => {}).finally(() => { if (pageChecks.get(panel) === controller) pageChecks.delete(panel); });
+    statusTasks.add(task); void task.finally(() => statusTasks.delete(task));
   }
   async function handle(panel: finch.AppPanel, raw: unknown): Promise<void> {
     const message = raw as ViewRequest;
@@ -387,17 +489,35 @@ export function activate(ctx: finch.MiniToolContext): void {
       await ready;
       requestRoot = state.root; requestVersion = libraryVersion;
       if (isLibraryScoped(message.type!) && ((message.libraryRoot !== undefined && message.libraryRoot !== state.root) || (message.libraryVersion !== undefined && message.libraryVersion !== libraryVersion))) throw new Error(t('library.changed'));
-      if (!activeStore && !['ready', 'library', 'libraryAction', 'librarySwitch', 'environment', 'environmentInstall', 'environmentHelp'].includes(message.type!)) {
+      if (!activeStore && !['ready', 'library', 'libraryAction', 'librarySwitch', 'libraryRename', 'libraryRemove', 'libraryAvailability', 'preferences', 'environment', 'environmentInstall', 'environmentHelp'].includes(message.type!)) {
         if (message.type === 'page') { await reply({ type: 'page', documents: [], total: 0, offset: 0 }); return; }
         throw new Error(t('library.chooseFirst'));
       }
+      if (activeStore && ['search', 'sync'].includes(message.type!)) {
+        const store = activeStore;
+        try { await store.assertSourceAvailable(); }
+        catch (error) {
+          if (activeStore === store) { unavailable = store.directoryRoot; await broadcastLibraries(); }
+          throw error;
+        }
+        if (activeStore !== store || libraryVersion !== requestVersion) throw new Error(t('library.changed'));
+        unavailable = null;
+      }
       switch (message.type) {
+        case 'preferences': {
+          if (typeof message.hideUnsupported !== 'boolean') throw new Error('Invalid display preference.');
+          await ctx.storage.set('hideUnsupported', message.hideUnsupported);
+          hideUnsupported = message.hideUnsupported;
+          await reply({ type: 'preferences', preferences: { hideUnsupported } });
+          if (activeStore) await broadcast();
+          break;
+        }
         case 'ready': {
           // Everything here must be engine-free: on a fresh machine the vector engine is still
           // downloading, and the setup screen cannot wait for it.
-          const { tags } = activeStore ? await state.store.summary() : { tags: [] };
+          const { tags } = activeStore ? await state.store.summary(true) : { tags: [] };
           await reply({ type: 'tags', tags, library: await libraryInfo(),
-            scanning: Boolean(scanning), environment: await environment.probe(), directories: activeStore ? await state.store.directories() : [], issuesTotal: activeStore ? await state.store.issueCount() : 0 });
+            scanning: Boolean(scanning), preferences: { hideUnsupported }, environment: await environment.probe(), directories: activeStore ? await state.store.directories(hideUnsupported, true) : [], issuesTotal: activeStore ? await state.store.issueCount(hideUnsupported, true) : 0 });
           if (activeStore && setupComplete && !scanning) void autoScan().catch(error => forwardProgress(errorText(error)));
           break;
         }
@@ -427,10 +547,70 @@ export function activate(ctx: finch.MiniToolContext): void {
         case 'library':
           await reply({ type: 'library', library: await libraryInfo() });
           break;
-        case 'libraryReveal':
-          await revealDirectory(state.root);
+        case 'libraryAvailability':
+          availability.refresh(libraries.list(),true);
+          await reply({type:'libraryAvailability',availabilityEpoch,availabilityVersion,states:libraries.list().map(record=>({id:record.id,fingerprint:JSON.stringify([record.root,record.index??null]),state:availability.state(record)}))});break;
+        case 'libraryRename': {
+          const record=libraries.find(String(message.id??''));
+          await gate.exclusive(()=>libraries.rename(record.id,typeof message.name==='string'?message.name:''));
+          await reply({type:'libraryRenamed',id:record.id,library:await libraryInfo()});await broadcastLibraries(panel);break;
+        }
+        case 'libraryRemove': {
+          const record=libraries.find(String(message.id??''));
+          const answer=await ctx.ui.showModalDialog({title:t('library.removeTitle',{name:record.name}),message:t('library.removeMessage'),fields:[{key:'deleteIndex',type:'boolean',label:t('library.deleteIndex'),default:false}],actions:[{id:'cancel',label:t('library.cancel')},{id:'remove',label:t('library.removeConfirm'),variant:'danger'}]});
+          if(answer.action!=='remove'){await reply({type:'libraryCanceled'});break;}
+          let warning:string|undefined;
+          await gate.exclusive(async()=>{
+            const latest=libraries.find(record.id);
+            if(latest.root!==record.root||latest.name!==record.name||JSON.stringify(latest.index)!==JSON.stringify(record.index))throw new Error(t('library.changed'));
+            const deleting=answer.values?.deleteIndex===true;
+            let target:string|undefined;
+            if(deleting){
+              target=await libraryIndexPath(latest,ctx.storagePath).catch(()=>{throw new Error('INDEX_REMOVAL_UNSAFE');});
+              for(const other of libraries.list().filter(v=>v.id!==latest.id)){
+                if(latest.index?.kind==='local'){
+                  if(!other.index)throw new Error('INDEX_REMOVAL_UNSAFE');
+                  if(other.index.kind==='local'&&other.index.key===latest.index.key)throw new Error('INDEX_REMOVAL_SHARED');
+                }else if(other.root===latest.root)throw new Error('INDEX_REMOVAL_SHARED');
+              }
+            }
+            const selected=latest.id===libraries.forRoot(state.root||unavailable||'')?.id;
+            const previousRoot=state.root||unavailable||'';
+            let detached=false,staged:StagedIndexRemoval|undefined;
+            const detach=()=>{
+              for(const check of pageChecks.values())check.abort();pageChecks.clear();
+              const previous=activeStore,scan=scanning,statuses=[...statusTasks];scanController?.abort();previous?.interrupt();
+              scanController=undefined;scanning=undefined;activeStore=undefined;state.root='';unavailable=null;libraryVersion++;detached=true;
+              void retire(previous,scan,statuses).catch(()=>{});
+            };
+            try{
+              if(selected)await ctx.storage.set('sourceDirectory','');
+              if(deleting){
+                if(selected)detach();
+                await Promise.all([...retiringIndexes.get(indexKey(target!))??[]]);
+                if(retirementFailures.has(indexKey(target!)))throw new Error('INDEX_RETIREMENT_FAILED');
+                staged=await stageIndexRemoval(latest,ctx.storagePath).catch(()=>{throw new Error('INDEX_REMOVAL_UNSAFE');});
+              }
+              await libraries.remove(latest.id);
+            }catch(error){
+              await staged?.rollback();
+              if(selected){await ctx.storage.set('sourceDirectory',previousRoot);if(detached&&!retirementFailures.has(indexKey(target??''))){try{await swapTo(previousRoot);}catch{unavailable=previousRoot;}}}
+              throw error;
+            }
+            if(selected&&!detached)detach();
+            if(pausedLibraries.delete(latest.root))await ctx.storage.set('pausedLibraries',[...pausedLibraries]).catch(()=>{warning=t('library.cleanupWarning');});
+            try{await staged?.commit();}catch{warning=t('library.cleanupWarning');}
+          });
+          await reply({type:'libraryRemoved',warning,library:await libraryInfo()});await broadcastLibraries(panel);break;
+        }
+        case 'libraryReveal': {
+          await state.store.assertSourceAvailable();
+          const directory = typeof message.directory === 'string' && message.directory !== ''
+            ? await assertSourcePath(state.root, directoryKey(message.directory)) : state.root;
+          await revealDirectory(directory);
           await reply({ type: 'libraryRevealed' });
           break;
+        }
         case 'libraryAction':
         case 'librarySwitch': {
           if (message.type === 'libraryAction' && message.mode !== 'choose') throw new Error(t('library.invalidDirectory'));
@@ -438,8 +618,6 @@ export function activate(ctx: finch.MiniToolContext): void {
             : await pickDirectory(t('library.title.choose', { root: state.root }), state.root);
           if (!chosen) { await reply({ type: 'libraryCanceled' }); break; }
           // Open in place; registering and switching never copy or rename source files.
-          scanController?.abort();
-          await scanning?.catch(() => {});
           const previousRoot = state.root;
           const existing = (await stat(join(chosen, '.knowledge')).catch(() => null))?.isDirectory();
           await gate.exclusive(() => swapTo(chosen, async root => {
@@ -454,37 +632,41 @@ export function activate(ctx: finch.MiniToolContext): void {
           break;
         }
         case 'tags':
-          await reply({ type: 'tags', tags: await state.store.tags(), directories: await state.store.directories(), issuesTotal: await state.store.issueCount() });
+          await reply({ type: 'tags', tags: await state.store.tags(true), directories: await state.store.directories(hideUnsupported, true), issuesTotal: await state.store.issueCount(hideUnsupported, true) });
           break;
         case 'page': {
+          const store = state.store;
           const tagId = typeof message.tagId === 'string' ? message.tagId : null;
           const sort = (['name', 'added', 'updated', 'modified', 'type', 'size'].includes(message.sort ?? '') ? message.sort : 'updated') as DocumentSort;
           const directory = typeof message.directory === 'string' ? message.directory : null;
           const descending = typeof message.descending === 'boolean' ? message.descending : undefined;
           if (message.refresh === true) {
             const page = await state.store.browseWindow(tagId, sort, directory, descending, {
-              issues: message.issues === true, anchorPath: typeof message.anchorPath === 'string' ? message.anchorPath : undefined,
+              issues: message.issues === true, hideUnsupported, catalogOnly: true, anchorPath: typeof message.anchorPath === 'string' ? message.anchorPath : undefined,
               anchorIndex: Number(message.anchorIndex ?? 0), offset: Number(message.offset ?? 0), limit: Number(message.limit ?? 50),
             });
-            const indexed = await state.store.indexStatus(page.documents.filter(doc => !('issueKind' in doc)));
-            const statuses = new Map(indexed.map(doc => [doc.id, doc]));
-            await reply({ type: 'page', ...page, documents: page.documents.map(doc => statuses.get(doc.id) ?? doc) });
+            await reply({ type: 'page', ...page });
+            verifyPage(panel, store, page.documents, requestVersion);
           } else {
-            const page = message.issues === true ? await state.store.issuePage(sort, Number(message.offset ?? 0), directory, descending)
-              : await indexedPage(tagId, sort, Number(message.offset ?? 0), directory, descending);
-            await reply({ type: 'page', ...page, offset: Math.max(0, Math.floor(Number(message.offset ?? 0)) || 0) });
+            const page = message.issues === true ? await state.store.issuePage(sort, Number(message.offset ?? 0), directory, descending, hideUnsupported, true,typeof message.cursor==='string'?message.cursor:undefined,message.before===true)
+              : await indexedPage(tagId, sort, Number(message.offset ?? 0), directory, descending,typeof message.cursor==='string'?message.cursor:undefined,message.before===true);
+            await reply({ type: 'page', ...page });
+            verifyPage(panel, store, page.documents, requestVersion);
           }
           break;
         }
         case 'locate': {
+          const store = state.store;
           const tagId = typeof message.tagId === 'string' ? message.tagId : null;
           const sort = (['name', 'added', 'updated', 'modified', 'type', 'size'].includes(message.sort ?? '') ? message.sort : 'updated') as DocumentSort;
           const id = String(message.id ?? '');
           const directory = typeof message.directory === 'string' ? message.directory : null;
-          const position = await state.store.browsePosition(id, tagId, sort, directory, typeof message.descending === 'boolean' ? message.descending : undefined);
+          const position = await state.store.browsePosition(id, tagId, sort, directory, typeof message.descending === 'boolean' ? message.descending : undefined, hideUnsupported, true);
           if (position === null) throw new Error('Document is not in the selected tag.');
           const offset = Math.floor(position / 50) * 50;
-          await reply({ type: 'page', ...(await indexedPage(tagId, sort, offset, directory, typeof message.descending === 'boolean' ? message.descending : undefined)), offset, focusId: id });
+          const page = await indexedPage(tagId, sort, offset, directory, typeof message.descending === 'boolean' ? message.descending : undefined);
+          await reply({ type: 'page', ...page, offset, focusId: id });
+          verifyPage(panel, store, page.documents, requestVersion);
           break;
         }
         case 'tagCreate': {
@@ -567,20 +749,29 @@ export function activate(ctx: finch.MiniToolContext): void {
         }
         case 'reveal': {
           const store = state.store;
-          const doc = message.issues === true ? await store.sourceIssue(String(message.id ?? '')) : await store.document(String(message.id ?? ''));
+          const doc = message.issues === true ? await store.sourceIssue(String(message.id ?? ''), true) : await store.document(String(message.id ?? ''), true);
           if (!doc) throw new Error('Document no longer exists.');
-          if (message.issues === true) {
+          try{
             await store.assertSourceAvailable();
-            await assertSourcePath(store.directoryRoot, doc.path);
-            if (store !== activeStore || requestVersion !== libraryVersion) throw new Error(t('library.changed'));
+            const binding=libraries.forRoot(store.directoryRoot)?.index;
+            if(binding?.kind==='source'&&binding.dev!==undefined){const root=await stat(store.directoryRoot,{bigint:true});if(String(root.dev)!==binding.dev||String(root.ino)!==binding.ino)throw new Error('Source identity changed.');}
+          }catch{throw new Error('SOURCE_UNAVAILABLE');}
+          let info;
+          try{await assertSourcePath(store.directoryRoot,doc.path);info=await stat(doc.path);}
+          catch(error){
+            const code=(error as NodeJS.ErrnoException).code;
+            if(['ENOENT','ENOTDIR'].includes(code??'')){try{await store.assertSourceAvailable();}catch{throw new Error('SOURCE_UNAVAILABLE');}throw new Error('SOURCE_MISSING');}
+            if(['EACCES','EPERM','EIO','ENOTCONN','ESTALE','ETIMEDOUT'].includes(code??''))throw new Error('SOURCE_UNAVAILABLE');
+            throw error;
           }
-          if ((await stat(doc.path)).isDirectory()) await revealDirectory(doc.path); else await revealFile(doc.path);
+          if (store !== activeStore || requestVersion !== libraryVersion) throw new Error(t('library.changed'));
+          if (info.isDirectory()) await revealDirectory(doc.path); else await revealFile(doc.path);
           await reply({ type: 'revealed' });
           break;
         }
       }
     } catch (error) {
-      await reply({ type: 'error', error: errorText(error) });
+      await reply({ type: 'error', id:message.id,error: errorText(error),...(message.type?.startsWith('library')?{library:await libraryInfo()}:{}) });
     }
   }
 
@@ -591,7 +782,7 @@ export function activate(ctx: finch.MiniToolContext): void {
     bound.add(panel);
     ctx.subscriptions.push(
       panel.onDidReceiveMessage((message) => handle(panel, message)),
-      panel.onDidDispose(() => { panels.delete(panel); }),
+      panel.onDidDispose(() => { panels.delete(panel); pageChecks.get(panel)?.abort(); pageChecks.delete(panel); }),
     );
   }));
 
